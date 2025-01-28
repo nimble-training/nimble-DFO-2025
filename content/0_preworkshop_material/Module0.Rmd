@@ -1,0 +1,194 @@
+---
+title: "NIMBLE Workshop Module 0"
+author: "Paul van Dam-Bates"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = FALSE,
+  results = 'hide'
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Introduction
+
+NIMBLE is a system for building and sharing analysis methods for statistical models from R, especially for hierarchical models and computationally-intensive methods. NIMBLE stands for Numerical Inference for statistical Models for Bayesian and Likelihood Estimation.
+
+In this workshop we are going to work through:
+
+- Writing a model in NIMBLE.
+- Compiling and running Markov Chain Monte Carlo (MCMC) to make Bayesian inference.
+- Techniques to improve mixing and performance of our MCMC.
+- Maximum likelihood in NIMBLE.
+- Writing your own custom distributions and algorithms.
+- Exploring some advanced NIMBLE topics.
+
+We will mix a small amount of theory (Bayesian and Frequentist) as we need it and work through the tools that NIMBLE offers. 
+
+## Installing NIMBLE
+
+Please make sure that you have NIMBLE installed and working on your machine in advance to the workshop. Given you are likely on a Windows computer, you'll need `Rtools` to compile R code to C++. This is likely already installed on your computer, but if you have trouble installing `nimble` checking this is a good place to start. See details at:
+https://r-nimble.org/html_manual/cha-installing-nimble.html
+
+```{r, eval = FALSE}
+install.packages("nimble")
+```
+
+## Some Review of Notation
+
+The BUGS (Bayesian inference Using Gibbs Sampling) language is the standard way to define a model in programs such as JAGS (Just Another Gibbs Sampler), NIMBLE, and other more conventional Bayesian software (e.g. OpenBUGS, WinBUGS). If you are familiar with standard notation for writing a hierarchical model, then it should be somewhat intuitive to write a model using BUGS. For example, a simple linear regression for some observed $y$ and some predictor $x$, is defined as
+
+$$
+\begin{aligned}
+  y_i & \sim N(\text{mean} = \mu_i, \text{sd} = \sigma)\\
+  \mu_i & = \beta_0 + \beta_1 x_i
+\end{aligned}
+$$
+In the BUGS language, for $n$ independent observations of $y$, we would write 
+
+```{r, echo = TRUE, eval=FALSE}
+for( i in 1:n ){
+  mu[i] <- beta[1] + beta[2]*x[i]
+  y[i] ~ dnorm(mean = mu[i], sd = sigma)
+}
+```
+
+Note here we are defining each observation as a stochastic node `~`  and the associated mean as a deterministic node, defined with `<-`. NIMBLE and other programs that compile the BUGS language can then generate a graphical model for the dependency structure of all nodes, but only compute the posterior density based off of the stochastic nodes.
+
+Because we will mostly be Bayesian in this workshop, we will also assume some priors such that,
+
+$$
+\begin{aligned}
+  \sigma & \sim \mathcal{U}(0, 20), \\
+  \beta_0 & \sim N(0, 10), \\
+  \beta_1 & \sim N(0, 10).
+\end{aligned}
+$$
+These can then be written as
+
+```{r, echo = TRUE, eval=FALSE}
+beta[1] ~ dnorm(0, sd=10)
+beta[2] ~ dnorm(0, sd=10)
+sigma ~ dunif(0, 20)
+```
+
+As a quick reminder, the posterior density is defined as the density of the parameters conditional on the observations and the prior distributions. In this case the full posterior density is proportional to
+
+$$
+[\sigma, \beta_1, \beta_2|y] \propto [\sigma][\beta_1][\beta_2] \prod_{i=1}^n [y_i|\beta_1,\beta_2,\sigma].
+$$
+We use $[\sigma]$ to represent the distribution function of $\sigma$. The vertical bar "$|$" means conditional, and $\propto$ means proportional to. The likelihood portion, $\prod_{i=1}^n [y_i|\beta_1,\beta_2,\sigma]$, depends on the values of the parameters. This likelihood times the priors is then proportional to the posterior. We say proportional as we do not know what the normalizing constant is. In some cases this can be known explicitly, but most of the time this is what makes Bayesian inference difficult and the reason we use integration techniques such as MCMC. 
+
+When we use conjugate prior distributions, we know the normalizing constant, conditional on the values of the other parameters. This allows us to sample directly from what is called the full conditional distribution for each parameter. When we do this iteratively, it is called Gibbs sampling. Before the advancement of modern computing, conjugate prior distributions and Gibbs sampling was the main way that Bayesian inference could be made.
+
+
+## Running your first model
+
+Let's play with the cars data to start. This is an observed distances to stop related to the speed a car was travelling.
+
+```{r data, echo = TRUE}
+data(cars)
+fit <- lm(dist ~ speed, data = cars)
+summary(fit)
+```
+
+Let's fit this as a very simple linear model. We need to set some constants such as the number of observations `n`, and the predictors themselves `speed`. We need to also set the data `dist`. Let's start by writing the likelihood using the BUGS language as `nimbleCode`. 
+
+```{r mod1, echo = TRUE, show = 'markup', eval = TRUE}
+library(nimble)
+
+modelcode <- nimbleCode({
+  ## Priors
+  beta[1] ~ dnorm(0,10) 
+  beta[2] ~ dnorm(0,10)
+  sigma ~ dunif(0,20)
+  
+  ## Build the Likelihood
+  for (i in 1:n){
+    mu[i] <- beta[1] + beta[2]*speed[i]
+    dist[i] ~ dnorm(mean = mu[i], sd = sigma)
+  }
+})
+```
+
+We now need to pass all the information that we put as data and constants in the nimble code.
+
+```{r, echo = TRUE}
+model_constants <- list(speed = cars$speed, n = nrow(cars))
+model_data <- list(dist = cars$dist)
+```
+
+We can then finally define the nimble code as a nimble model.
+
+```{r, echo = TRUE}
+model <- nimbleModel(code = modelcode, constants = model_constants,
+                    data = model_data)
+## model$getNodeNames(determOnly = TRUE)
+## model$getNodeNames(stochOnly = TRUE) ## Data and Priors
+## model$getNodeNames(stochOnly = TRUE, includeData = FALSE) ## Priors
+```
+
+Now we have a model in NIMBLE that we can start to manipulate. We will initialize it manually by interacting directly with the model.
+
+```{r, echo =  TRUE}
+## Based on lm fit:
+model$beta <- as.numeric(coef(fit))
+## Adjust MLE for bias correction to match things below.
+model$sigma <- sigma(fit)*(nrow(cars)-1)/nrow(cars)
+```
+
+We can now find the log posterior density for those initial values that we just passed to the model by using `model$calculate()`. To compare the log likelihood with the `lm` example though we will just calculate the log likelihood, excluding the priors.
+
+```{r, echo = TRUE}
+## Calculate the log posterior density (and update all the parameters)
+model$calculate()
+## Just get the log likelihood.
+model$getLogProb(model$getNodeNames(dataOnly = TRUE))
+## Identical to what was fit by lm.
+logLik(fit)
+```
+
+Now the usefulness of NIMBLE is that we can actually just turn this model object into compiled C++ code. This makes it a lot faster, even for such a simple model.
+
+```{r speed, echo = TRUE, show = 'markup', eval = FALSE}
+cmodel <- compileNimble(model)
+cmodel$calculate()
+microbenchmark::microbenchmark(
+  Rversion = model$calculate(),
+  Cversion = cmodel$calculate()
+)
+```
+
+Great, you have now confirmed that your NIMBLE installation is working, you are able to compile code and you have define your first model. If you want to do a quick MCMC run the code below. This is the one line shortcut to do an MCMC more akin to JAGS. It will define the model as we did above, compile it to C++, define the MCMC samplers, compile those to C++, and then execute the MCMC.
+
+```{r, eval = FALSE, echo = TRUE}
+mcmc.out <- nimbleMCMC(code = modelcode, constants = model_constants,
+                       data = model_data,
+                       nchains = 3, niter = 10000, 
+                       inits = \(){list(beta = rnorm(2), sigma = runif(1, 1,4))},
+                       nburnin = 3000, samplesAsCodaMCMC = TRUE,
+                       summary = TRUE, monitors = c('beta','sigma'))
+```
