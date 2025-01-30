@@ -1,0 +1,303 @@
+---
+title: "Introduction to Bayesian Statistics"
+author: "Paul van Dam-Bates"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = FALSE,
+  results = 'hide'
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Introduction to Bayesian Statistics
+
+In a hierarchical model, we typically have:
+
+- params: top-level parameters, e.g. coefficients and std. deviations.
+- states: random effects or latent states.
+- data
+
+A Frequentist maximizes the likelihood, the distribution of the data given the parameters, over the parameters. The likelihood can be written as
+
+\[
+L(params|data) = [\mbox{data | states, params}][\mbox{states | params}].
+\]
+
+- $[\cdot]$ indicates probability density or mass.
+
+
+However, you'll note that direct maximization over the states is not possible and integration methods are used (e.g. Laplace Approximation).
+
+---
+
+***Question: Do we maximize over the likelihood or log likelihood and why?***
+
+---
+
+A Bayesian is interested in the joint posterior distribution of the unknown variables (parameters and states)
+
+\[
+[\mbox{params, states | data}] = \frac{[\mbox{data | states, params}][\mbox{states | params}] [\mbox{params}]}{[\mbox{data}]}
+\]
+
+
+- Denominator is hard to calculate but it is a constant (generally requires a high dimensional integration).
+
+- More often we want to know the marginal posterior distribution of each param or state, which is the integral of joint posterior distribution over all other states and params (An additional integral for each parameter and state).
+
+- Model calculations (in NIMBLE) refer to the numerator, $[\mbox{data, states, params}]$.
+
+## Integration Methods
+
+From above, it should be obvious that integration is what is hard about hierarchical models, as a Fequentist or Bayesian. There are two main methods for integration that we will discuss in this course.
+
+1. Numerical methods: Such as the Laplace approximation used by packages such as `lme4`, `glmmTMB` and the bread and butter of `TMB` or previously `ADMB`. Or in Bayesian software such as `INLA` (integrated nested Laplace approximation) and available in `nimble` for both Frequentist and Bayesian models. Functions such as `integrate` in R use more general quadrature methods to do integration.
+
+2. Simulation based methods: Such as Monte Carlo simulation or Markov chain Monte Carlo (MCMC). This is what modern Bayesian packages use such as `jags`, `nimble`, or `stan` (Hamiltonian Monte Carlo).
+
+Let's try to integrate something using Monte Carlo simulation. Consider a very basic linear mixed model. 
+
+$$
+\begin{aligned}
+  y_{ij} & \sim N(3 + x_j, 0.25) \\
+  x_j & \sim N(0, 0.05)
+\end{aligned}
+$$
+
+We will simulate the random effects `nsim` times and for each recalculate the log likelihood of the data, given those simulations. The average log likelihood is the marginal log likelihood. We can compare that with the 'true' log likelihood, which in this case the Laplace approximation is exact.
+
+***Laplace***
+
+\[
+  [\mbox{y | params}] \approx \frac{[\mbox{data | states, params}][\mbox{states | params}]}{[\mbox{states|data, params}]_G}
+\]
+
+The denominator, $[\mbox{states|data, params}]_G$ is a multivariate normal approximation of the posterior distribution of the states, evaluated at the posterior mode. This method requires an optimization of the state variables for every value of the parameters. Fast optimzation and efficient (and accurate) derivatives are critical. This is Laplace approximation is implemented often using automatic differentation (AD) available in packages such as `TMB` and `nimble`.
+
+***Monte Carlo Integration***
+
+Monte Carlo integration is done by randomly generating the states, and then computing the log likelihood conditional on the states, time the probability of generating the sample, $p(\mbox{states}_i)$.
+
+\[
+  [\mbox{y | params}] \approx \sum_{i=1}^{N_{sim}} [\mbox{data | } \mbox{states}_i\mbox{, params}] [\mbox{states | params}] / p(\mbox{states}_i).
+\]
+
+Note that when we sample directly from $[\mbox{states | params}]$, this reduces to,
+\[
+  [\mbox{y | params}] \approx \sum_{i=1}^{N_{sim}} [\mbox{data | } \mbox{states}_i\mbox{, params}].
+\]
+
+
+```{r, echo = TRUE}
+## Model equivalent to y ~ 1 + (1|grp) for those familiar with lme4 and glmmTMB syntax.
+## Intercept = mu.
+
+n <- 70
+x <- rnorm(7, 0, 0.05)
+y <- rnorm(n, 3 + rep(x, each = 10), 0.25)
+grp <- rep(1:7, each = 10)
+nsim <- 1000
+
+loglik_laplace <- function(pars){
+  sigma_y <- exp(pars[1])
+  sigma_x <- exp(pars[2])
+  mu <- pars[3]
+  ngrp <- length(unique(grp))
+  negll <- function(x) {
+    -sum(dnorm(y, mu + x[grp], sigma_y, log = TRUE)) - sum(dnorm(x, 0, sigma_x, log = TRUE))
+  }
+  grnegll <- function(x){
+    gr <- 2*(x-0)/(2*sigma_x^2)
+    for( i in 1:ngrp ){
+      gr[i] <- gr[i] - 2*sum((y[grp == i] - x[i] - mu))/(2*sigma_y^2)
+    }
+    gr
+  }
+  fit <- optim(rep(0,ngrp), negll, grnegll, hessian = TRUE)
+  0.5*ngrp*log(2*pi) - 0.5*log(det(fit$hessian)) - fit$value
+}
+
+loglik_montecarlo <- function(pars, demo = FALSE){
+  sigma_y <- exp(pars[1])
+  sigma_x <- exp(pars[2])
+  mu <- pars[3]
+  lik <- numeric(nsim)
+  for(i in 1:nsim){
+    xj <- rnorm(7,0,sigma_x)
+    # xj <- runif(7, -0.05, 0.05)
+    lik[i] <-  exp(sum(dnorm(y, mu + xj[grp], sigma_y, log = TRUE)))
+  }
+  if(!demo) 
+      return(log(sum(lik)/nsim))
+  else
+      return(lik)
+}
+
+## Approximate log likelihood by each method:
+pars <- c(log(0.25), log(0.05), 3)
+loglik_montecarlo(pars)
+loglik_laplace(pars)
+
+## More simulation means for accuracy:
+nsim <- 100
+loglik_montecarlo(pars)
+nsim <- 100000
+loglik_montecarlo(pars)
+
+## Plot Monte Carlo error:
+nsim <- 1000
+lik <- loglik_montecarlo(pars, TRUE)
+cumlik <- cumsum(lik)/1:nsim
+plot(1:nsim, log(cumlik), type = 'l', xlab = "# of Simulations", ylab = "Log Likelihood")
+```
+
+We see that by simulation, we can do pretty well, but it is slow. If we are using optimization to find the params, doing this on a function that includes Monte Carlo error can be a real challenge.
+
+We will mostly focus on simulation based methods (MCMC) for inference in this course but revisit Laplace on the last day.
+
+- MCMC avoids integration by sampling proportional to the joint posterior distribution.
+
+- Markov chain means that each new sample will only depend on the previous sample, and the chain will have properties that should result in generating samples from the posterior distribution.
+
+- Monte Carlo means that the Markov chain is constructed with random sampling.
+
+- For efficiency, `nimble` only does calculations that are dependent on the param or state being changed for each MCMC iteration. This is done through the graphical relationships between data, states, and params.
+
+- Output from MCMC is a matrix of samples for each param and state drawn from the posterior distribution. Taken together, it represents the joint posterior distribution. Taken one param at a time it represents the marginal posterior distribution.
+
+
+Two of the key standard MCMC samplers are Gibbs sampling, and random walk Metropolis Hastings.
+
+### Gibbs (conjugate) samplers
+
+- Possible when we can write the full conditional posterior distribution, $[\theta_1 | \theta_F, Y]$, analytically.
+- This only works for particular (*conjugate*) prior-posterior combinations.
+- Despite sounding simple, there is some computational cost.
+- Both JAGS and NIMBLE use conjugate samplers by default when available.
+- We sample proportional to the true posterior. As a result, when we use `density` to plot our samples, this normalizes the random samples to be approximately the marginal posterior distribution (No actual integration  done).
+
+Example, $y \sim Poisson(\lambda)$ and $\lambda \sim \text{gamma}(1,1)$. We will compare our Gibbs sampler with that of NIMBLE.
+
+```{r, echo = TRUE, eval = FALSE}
+library(nimble)
+y <- rpois(100, 3)
+post.lambda <- rgamma(10000, 1 + sum(y), 1+100) ## 10000 Gibbs samples for lambda.
+
+demoCode <- nimbleCode({
+  for(i in 1:n) 
+      y[i] ~ dpois(lambda)
+  lambda ~ dgamma(shape = 1, rate = 1)
+})
+
+demoModel <- nimbleModel(demoCode, data = list(y=y), 
+    constants = list(n = length(y)), inits = list(lambda = 1))
+mcmcConf <- configureMCMC(demoModel)
+mcmcConf$printSamplers()
+mcmc <- buildMCMC(mcmcConf)
+cdemoModel <- compileNimble(demoModel)
+cmcmc <- compileNimble(mcmc)
+cmcmc$run(10000)
+samples <- as.matrix(cmcmc$mvSamples)
+
+plot(density(post.lambda), main ="")
+lines(density(samples), col = 'red')
+```
+
+### Adaptive Random-walk Metropolis-Hastings samplers
+
+The idea with random-walk Metropolis-Hastings is that we randomly propose a new value of our state or parameters based on a proposal distribution (generally a normal). We then accept or reject that new value based on how much it changes the posterior (or target) distribution. The algorithm becomes adaptive as we 'tune' it automatically which means choosing the standard deviation of the proposal distribution based on how frequently new proposals are accepted. If we accept nearly every proposal (small standard deviation), then we aren't taking a very good sample of the overall posterior distribution. If we reject all samples, we aren't exploring the posterior at all (large standard deviation). Tuning attempts to find a standard deviation that accepts at an optimal rate of 44%.
+
+```{r, echo=FALSE}
+theta1 <- seq(0.5, 5, length = 200)
+targetDist <- 0.1 * dnorm(theta1, 2, 0.5)
+current <- 1.3
+proposalDist <- dnorm(theta1, current, sd = 0.1)
+proposalDisplayScale <- max(proposalDist)/max(targetDist)
+proposalDist <- proposalDist / proposalDisplayScale
+proposal <- 1.5
+nextTargetDist <- 0.03 * dnorm(theta1, 2.4, 0.2)
+{
+  plot(theta1, targetDist, type = 'l', col = 'black',
+       main = "Random-walk Metropolis-Hastings",
+       ylab = "Target and proposal distributions (scaled)",
+       xlab = expression(theta[1]))
+  points(theta1, proposalDist, type = 'l', col = 'blue')
+  points(theta1, nextTargetDist, type = 'l', col = 'goldenrod')
+  points(current, 0.1 * dnorm(current, 2, 0.5), pch = 19, col = 'red')
+  points(proposal, 0.1 * dnorm(proposal, 2, 0.5), pch = 8, col = 'red')
+  lines(c(current, current), c(0, 0.1 * dnorm(current, 2, 0.5)), col = 'red')
+  lines(c(proposal, proposal), c(0, 0.1 * dnorm(proposal, 2, 0.5)), col = 'red')
+  legend("topright", lty = c(1,1,0,0, 1), 
+         pch = c(NA, NA, 19, 8, NA), 
+         col = c('black','blue','red','red', 'goldenrod'),
+         legend = c('target distribution', 'proposal distribution (scaled)', 'current value', 'proposal value', 'next iteration target distribution' ))
+}
+```
+
+- Current value of the parameter is $\theta_1$.
+- Propose a new value (red asterisk) $\theta_1' \sim N(\theta, \nu)$ (blue distribution).  This is centered on the current value, so we call it a "random walk".
+- How to accept or reject $\theta_1'$?
+     - Calculate ratio of $[Y, (\theta_1', \theta_F)] / [Y, (\theta_1, \theta_F)]$ (using only needed factors). 
+     - If the ratio is $\gt 1$, accept $\theta'$.
+     - Otherwise that ratio is the "acceptance probability".
+     - Draw a uniform random variate to decide whether to accept or reject.
+     - Rejection means $\theta_1^{(k+1)} = \theta_1^{(k)}$
+- Computational cost is either 
+     - two evaluations of $[Y, (\theta_1', \theta_F)]$ (only the parts that depend on $\theta_1$), or
+     - one evaluation of $[Y, (\theta_1', \theta_F)]$ (ditto) and some copying to save previous values.
+- How to choose $\nu$? 
+     - By "adaptation".  The algorithm increases or decreases $\nu$ to achieve theoretically derived optimal acceptance rate.  
+- Remember that the target distribution may change on the next iteration because $\theta_F$ may have been updated.
+- Generalizes to multivariate (block) sampling.
+- This method is computationally cheap but may or may not mix well.
+
+### Samplers in nimble
+
+- random-walk (includes block/multivariate)
+- slice samplers (includes block/multivariate)
+- binary (for Bernoulli variables)
+- categorical (these are *costly*)
+- posterior predictive sampler (for no dependencies)
+- elliptical slice sampler (for certain scalar or multivariate normal cases)
+- CAR (conditional autoregression model) normal sampler
+- CAR proper sampler
+- samplers for Bayesian non-parametric (BNP) distributions
+- random-walk multinomial sampler
+- random-walk Dirichlet sampler
+- cross-level sampler
+- `RW_llFunction`: a random-walk Metropolis-Hastings that calls any log-likelihood function you provide.
+- Particle MCMC samplers
+- Hamiltonian Monte Carlo (HMC)
+- Others being developed and added (e.g. Polya-Gamma sampler)
+- Samplers that you write!!
+
+```{r, eval = FALSE, echo = TRUE}
+?samplers
+```
+
+
+
