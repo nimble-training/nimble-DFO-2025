@@ -111,17 +111,32 @@ nadina_model_code_1 <- nimbleCode({
     logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
   }
 })
+``` 
+
+To turn code into an object, we need to provide some combination of:
+
+- `constants` (like `N` or possibly `x`)
+- `data` (like `y` or possibly `x`)
+- `inits` (initial values for any parameters)
+
+```{r}
 model <- nimbleModel(nadina_model_code_1,
-                            constants = list(nobs = nrow(nadina), S = nadina$spawners/1000),
-                            data = list(logRS = nadina$logRS))
+                     constants = list(nobs = nrow(nadina), S = nadina$spawners/1000),
+                     data = list(logRS = nadina$logRS),
+                     inits = list(sigma = 1, logalpha = 2, E = 100))
 ```
 
 We can interact with our model now run it directly in R. First we'll need to give it some initial values. If we want the model to save the values and then update, we can use `calculate` to actually run the model and return the log posterior density.
 
 ```{r}
-model$logalpha <- 1.5
-model$E <- 10.5
-model$sigma <- 0.5
+fit.lm <- lm(logRS ~ I(spawners/1000), data = nadina)
+logalpha.lm <- coef(fit.lm)[1]
+E.lm <- 1/abs(coef(fit.lm)[2])
+sigma.lm <- sigma(fit.lm)
+
+model$logalpha <- logalpha.lm
+model$E <- E.lm
+model$sigma <- sigma.lm
 model$calculate()
 ```
 
@@ -131,34 +146,45 @@ Now let's simulate some new data given these parameters. This might be a good wa
 param_nodes <- c("logalpha", "E", "sigma")
 sim_nodes <- model$getDependencies(param_nodes, self = FALSE)
 model$simulate(sim_nodes, includeData = TRUE)
-plot(model$logRS, nadina$logRS, xlab= "Simulated Data", ylab = "Original Data")
+plot(model$logRS, nadina$logRS, xlab = "Simulated Data", ylab = "Original Data")
+
+## Better reset the data:
+model$logRS <- nadina$logRS
+model$calculate()
 ```
 
-Now let's see some more about how NIMBLE stores objects. For our current model, we have explicitly define `mean_logRS`.
+Let's play around with our model object.
 
 ```{r}
-model$mean_logRS
+model$mean_logRS[1:3]
+
+model$getLogProb()
+model$getLogProb("logRS") ## Data log likelihood
+model$getLogProb("logRS[1]")  ## First observation
+
+model$getDependencies("sigma", self = FALSE)
+
+## Param nodes:
+model$getParents("logRS[1]", self = FALSE, stochOnly = TRUE)
+
+model$getParam("logRS[1]", "mean")
+model$mean_logRS[1]
 ```
 
-What if we had instead written it without the `mean_logRS` defined? In this case, NIMBLE will create a lifted node and act as if you had. It changes nothing about efficiency but makes your code slightly harder to read.
+Order of the code doesn't matter. The model is exactly the same. Note that we also didn't define the mean explicitly, but put it within the distribution. NIMBLE will lift the node in the background making this model precisely the same as above but with different internal naming.
 
 ```{r}
-nadina_model_code_2 <- nimbleCode({
-  # Priors
-  logalpha ~ dnorm(mean = 1.5, sd = 20)
-  sigma ~ dunif(0, 10)
-  logE ~ dhalfflat() ## This is potentially a really big number.
-  
+nimbleCode({
   # Likelihood:
   for( i in 1:nobs ){
     logRS[i] ~ dnorm(logalpha*(1-S[i]/E), sd = sigma)
   }
+
+  # Priors
+  logalpha ~ dnorm(mean = 1.5, sd = 20)
+  sigma ~ dunif(0, 10)
+  E ~ dhalfflat()
 })
-model <- nimbleModel(nadina_model_code_2,
-                            constants = list(nobs = nrow(nadina), S = nadina$spawners/10000),
-                            data = list(logRS = nadina$logRS), inits = list(logalpha = 1.5, E = 10.5, sigma = 0.5))
-sim_nodes <- model$getDependencies(param_nodes, self = FALSE)
-head(sim_nodes)
 ```
 
 We can now fit our first model. It will compile the model into C++, then define the MCMC, compile that into C++, and then finally run the MCMC.
@@ -175,14 +201,14 @@ samples <- coda::mcmc(samples)
 plot(samples)
 ```
 
-Oh no. That's atrocious. An improper unconstrained prior on $E$ was a bad decision.
+That's not looking good!
 
 ```{r}
-nadina_model_code_3 <- nimbleCode({
+nadina_model_code_2 <- nimbleCode({
   # Priors
   logalpha ~ dnorm(mean = 1.5, sd = 20)
-  sigma ~ dunif(0, 10)
-  logE ~ dnorm(2.5, 10)
+  sigma ~ dunif(0,10)
+  logE ~ dnorm(3, 10)
   E <- exp(logE)
   
   # Likelihood:
@@ -191,8 +217,10 @@ nadina_model_code_3 <- nimbleCode({
     logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
   }
 })
-model <- nimbleModel(nadina_model_code_3,
-                            constants = list(nobs = nrow(nadina), inits = list(logalpha = 1.5, logE = log(10.5), sigma = 0.5)))
+model <- nimbleModel(nadina_model_code_2,
+                    constants = list(nobs = nrow(nadina), S = nadina$spawners/1000),
+                    data = list(logRS = nadina$logRS),
+                    inits = list(logalpha = 1.5, logE = log(10.5), sigma = 0.5))
   
 samples <- nimbleMCMC(model = model)
 
