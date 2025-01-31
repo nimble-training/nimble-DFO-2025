@@ -28,7 +28,8 @@ knitr_opts <- list(
   cache.comments = TRUE,
   fig.align = "center",
   echo = TRUE,
-  results = 'hide'
+  results = 'hide',
+  eval = FALSE
 )
 do.call(knitr::opts_chunk$set, knitr_opts)
 ```
@@ -68,15 +69,24 @@ do.call(knitr::opts_chunk$set, knitr_opts)
 
 ## First example: Salmon Stock Recruit Models
 
-We consider spawners counts of sockeye salmon the Fraser River. Recruits are estimated as the spawners plus the catch from that broodyear. We will start with Nadina sockeye as the example but combine multiple stocks as we progress. 
+We consider spawners counts of sockeye salmon the Fraser River. Recruits are estimated as the spawners plus the catch from that broodyear. We will start with Early Stuart sockeye as the example but combine multiple stocks as we progress. 
 
-```{r}
+```{r, eval = TRUE}
 library(tidyverse)
-load("data/fraser_sockeye.Rdata")
-nadina <- fraser_sockeye %>% filter(stock == "Nadina")
-ggplot(nadina, aes(x = broodyear, spawners)) +
+library(readxl)
+sockeye <- read_excel("data/Production Data_Detailed Format.xlsx")
+sox <- sockeye %>% 
+  filter(production_stock_name == "Early Stuart") %>%
+  group_by(broodyr, total_broodyr_spawners) %>%
+  summarize(recruits=sum(num_recruits), .groups = "drop") %>%
+  rename(broodyear = broodyr, spawners = total_broodyr_spawners) %>%
+  mutate(logRS = log(recruits) - log(spawners)) %>%
+  filter(!is.na(spawners) & !is.na(recruits))
+
+ggplot(sox, aes(x = broodyear, spawners/1000)) +
   geom_line() + 
-  theme_bw()
+  theme_bw() +
+  xlab("Brood Year") + ylab("Number of Spawners (x 1000)")
 ```
 
 We will build a Ricker stock recruit model for these data. The parameters are $r = \mbox{log}(\alpha)$, where $\alpha$ is the maximum recruits per spawner, and $E$, the unfished equilibrium population size. For brood year $i$, $S_i$ spawners generate $R_i$ recruits. Assuming combined process and observation noise $w_{i} \sim N(0,\sigma)$,
@@ -85,23 +95,23 @@ We will build a Ricker stock recruit model for these data. The parameters are $r
   R_i = S_i \mbox{exp}\Big(r \big(1-\frac{S_i}{E}\big) + w_i\Big).
 \]
 
-We will then rewrite this as $y_i = log(R_i/S_i)$, as a linear model,
+We will then rewrite this as linear model, $y_i = log(R_i/S_i)$,
 
 \[
   y_i = r \big(1-\frac{S_i}{E}\big) + w_i.
 \]
 
-We will now program our first NIMBLE model. Here is where you get to choose how you want to name things in your code that will be obvious to you. Decisions for the number of obsevations such as `n` or `nobs`. Whatever makes your code easy to read for yourself and others.
+Now let's program our first NIMBLE model. Here is where you get to choose how you want to name things in your code that will be obvious to you. Decisions for the number of observations such as `n` or `nobs`. Whatever makes your code easy to read for yourself and others.
 
 Note that for those that used JAGS in the past, the default `dnorm` in nimble is parameterized as `mean` and `sd`. However, it accepts `tau` as well, which is the default of JAGS. Careful when copying code between!!!
 
 Let's think about some prior distributions. The error term, $\sigma$, is likely relatively small given that it's error on the scale of $log(R/S)$, but it is strictly positive. Log productivity $r$, `logalpha`, is not constrained but likely not mean 1. We may expect it to be around 1.5 on the log scale, but with very high uncertainty. The challenging term here is $E$, as it is potentially very large. We may scale $R$ and $S$ in advance or just work on the large scale, but our prior must reflect that it can be very large.
 
-```{r}
+```{r, eval = TRUE}
 library(nimble)
-nadina_model_code_1 <- nimbleCode({
+sox_model_code_1 <- nimbleCode({
   # Priors
-  logalpha ~ dnorm(mean = 1.5, sd = 20)
+  logalpha ~ dunif(0, 10)
   sigma ~ dunif(0, 10)
   E ~ dhalfflat() ## This is potentially a really big number.
   
@@ -120,18 +130,18 @@ To turn code into an object, we need to provide some combination of:
 - `inits` (initial values for any parameters)
 
 ```{r}
-model <- nimbleModel(nadina_model_code_1,
-                     constants = list(nobs = nrow(nadina), S = nadina$spawners/1000),
-                     data = list(logRS = nadina$logRS),
+model <- nimbleModel(sox_model_code_1,
+                     constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                     data = list(logRS = sox$logRS),
                      inits = list(sigma = 1, logalpha = 2, E = 100))
 ```
 
 We can interact with our model now run it directly in R. First we'll need to give it some initial values. If we want the model to save the values and then update, we can use `calculate` to actually run the model and return the log posterior density.
 
 ```{r}
-fit.lm <- lm(logRS ~ I(spawners/1000), data = nadina)
-logalpha.lm <- coef(fit.lm)[1]
-E.lm <- 1/abs(coef(fit.lm)[2])
+fit.lm <- lm(logRS ~ I(spawners/10000), data = sox)
+logalpha.lm <- as.numeric(coef(fit.lm)[1])
+E.lm <- as.numeric(1/abs(coef(fit.lm)[2]))
 sigma.lm <- sigma(fit.lm)
 
 model$logalpha <- logalpha.lm
@@ -146,10 +156,9 @@ Now let's simulate some new data given these parameters. This might be a good wa
 param_nodes <- c("logalpha", "E", "sigma")
 sim_nodes <- model$getDependencies(param_nodes, self = FALSE)
 model$simulate(sim_nodes, includeData = TRUE)
-plot(model$logRS, nadina$logRS, xlab = "Simulated Data", ylab = "Original Data")
-
+plot(model$logRS, sox$logRS, xlab = "Simulated Data", ylab = "Original Data")
 ## Better reset the data:
-model$logRS <- nadina$logRS
+model$logRS <- sox$logRS
 model$calculate()
 ```
 
@@ -171,7 +180,7 @@ model$getParam("logRS[1]", "mean")
 model$mean_logRS[1]
 ```
 
-Order of the code doesn't matter. The model is exactly the same. Note that we also didn't define the mean explicitly, but put it within the distribution. NIMBLE will lift the node in the background making this model precisely the same as above but with different internal naming.
+Order of the code doesn't matter. The model is exactly the same. Note that we also didn't define the mean explicitly, but put it within the distribution. NIMBLE will lift the node in the background making model code below precisely the same as above but with different internal naming.
 
 ```{r}
 nimbleCode({
@@ -181,7 +190,7 @@ nimbleCode({
   }
 
   # Priors
-  logalpha ~ dnorm(mean = 1.5, sd = 20)
+  logalpha ~ dunif(0, 10)
   sigma ~ dunif(0, 10)
   E ~ dhalfflat()
 })
@@ -203,28 +212,221 @@ plot(samples)
 
 That's not looking good!
 
+***Discussion*** What should we do? Prior distributions? Is this a problem with the model or the MCMC?
+
+What can we do to improve this? Probably makes sense to put a proper prior on $E$. Maybe a good place to start is a log-normal prior on $E$ which is equivalent to a normal prior on $log(E)$. What mean and variance should we choose?
+
 ```{r}
-nadina_model_code_2 <- nimbleCode({
+sox_model_code_2a <- nimbleCode({
   # Priors
-  logalpha ~ dnorm(mean = 1.5, sd = 20)
+  logalpha ~ dunif(0, 10)
   sigma ~ dunif(0,10)
-  logE ~ dnorm(3, 10)
+  logE ~ dnorm(5,20)
   E <- exp(logE)
-  
+
   # Likelihood:
   for( i in 1:nobs ){
     mean_logRS[i] <- logalpha*(1-S[i]/E)
     logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
   }
 })
-model <- nimbleModel(nadina_model_code_2,
-                    constants = list(nobs = nrow(nadina), S = nadina$spawners/1000),
-                    data = list(logRS = nadina$logRS),
-                    inits = list(logalpha = 1.5, logE = log(10.5), sigma = 0.5))
+model <- nimbleModel(sox_model_code_2a,
+                    constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                    data = list(logRS = sox$logRS),
+                    inits = list(logalpha = 1.5, logE = log(100), sigma = 0.5))
   
-samples <- nimbleMCMC(model = model)
-
-samples <- coda::mcmc(samples)
+samples <- nimbleMCMC(model = model, nburnin = 2000, niter = 10000, 
+                      samplesAsCodaMCMC = TRUE, monitors = c("E", "sigma", "logalpha"))
 plot(samples)
 ```
 
+***Reparameterization***
+
+\[
+  y_i = \mbox{log} - \beta S_i + w_i.
+\]
+
+```{r}
+sox_model_code_2b <- nimbleCode({
+  # Priors
+  logalpha ~ dunif(0, 10)
+  sigma ~ dunif(0,10)
+  beta ~ dunif(0,1)
+
+  # Likelihood:
+  for( i in 1:nobs ){
+    mean_logRS[i] <- logalpha - S[i]*beta
+    logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
+  }
+})
+model <- nimbleModel(sox_model_code_2b,
+                    constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                    data = list(logRS = sox$logRS),
+                    inits = list(logalpha = 1.5, beta = 0.0001, sigma = 0.5))
+  
+samples <- nimbleMCMC(model = model, nburnin = 2000, niter = 10000, 
+                      samplesAsCodaMCMC = TRUE, monitors = c("beta", "sigma", "logalpha"))
+plot(samples)
+```
+
+Notice that high uncertainty on the $\beta$ scale near zero translates to extreme uncertainty on the $1/\beta$ scale making this behaviour similar for both even though this looks better.
+
+## Reference Points and R functions in NIMBLE:
+
+Let's adapt this model to compute reference points. Using the Ricker equation, we can calculate three key reference points relying on Lamberts W function to solve explicitly.
+
+1. $S_{max}$ - The number of spawners that maximizes the number of recruits. This is simply $E/r$ and straightforward for this model.
+
+2. $S_{msy}$ - The maximum sustainable yield that can be harvested, such that recruits are equal spawners.
+
+$$
+  S_{msy} = \Big(1-\mbox{LambertW}(e^{1-r})\Big) S_{max}
+$$
+
+3. $S_{gen}$ - The number of spawners required to reach $S_{msy}$ in a single generation.
+$$
+  S_{gen} = -\mbox{LambertW}(-\frac{S_{msy}}{\alpha S_{max}})S_{max}.
+$$
+
+One way to compute these reference points is to take the output from the MCMC and manually compute the posterior distributions of the reference points.
+
+```{r}
+library(gsl)
+
+calc_smax <- function(logalpha, E){
+  return(E/logalpha)
+}
+## Posteroir of smax:
+smax <- calc_smax(samples[,"logalpha"], samples[,"E"])*10000
+
+calc_smsy <- function(smax, logalpha){
+    (1-gsl::lambert_W0(exp(1-logalpha)))*smax
+}
+## Posterior of smsy
+smsy <- calc_smsy(smax, samples[,"logalpha"])
+
+calc_sgen <- function(smsy, smax, logalpha)
+{
+  -gsl::lambert_W0(-smsy/(exp(logalpha)*smax))*smax
+}
+sgen <- calc_sgen(smsy, smax, samples[,"logalpha"])
+```
+
+We can actually use LambertW in our nimble code by adding it to nimble via `nimbleRcall`. We need to let nimble know the data type of input and output to expect from the function and then nimble can interact with the R function within the nimble code itself. Even after it's compiled in C++, nimble will call R separately to execute the `nimbleRcall` function. 
+
+Data types in nimble include:
+- double(): where double(0) is a scalar, double(1) vector, double(2) matrix, and double(n) array of dimension n.
+- integer(): Same as double above but for integers.
+- character(): same as above but for strings/characters.
+- logical(): Same as above but for Boolean (`TRUE`/`FALSE`) variables.
+
+Note that this function as seen above can take a vector and return a vector. But for simplicity we will pretend that we can only pass it a scalar and return a scalar. We can change that in the future. We will implement this method and test it in a simple test case. The important first step to check is if this code compiles into C++ or not. Once that is completed, we know that we can confidently include this function into our model code.
+
+```{r}
+lamwR <- function(x){gsl::lambert_W0(x)}
+nimLamW <- nimbleRcall(prototype = function(x = double()){}, Rfun = 'lamwR', 
+                      returnType = double())
+
+demoCode <- nimbleCode({
+    value <- nimLamW(x)
+})
+demoModel <- nimbleModel(demoCode, inits = list(x = 0.25),
+                         check = FALSE, calculate = FALSE)
+CdemoModel <- compileNimble(demoModel)
+CdemoModel$calculate("value")
+CdemoModel$value == gsl::lambert_W0(0.25) ## Same
+
+CdemoModel$x <- 0.002
+CdemoModel$calculate("value")
+CdemoModel$value == gsl::lambert_W0(0.002) ## Same
+```
+
+### Exercise 
+
+Let's take a few minutes to add reference points to the Early Stuart sockeye model. Compile the model into C++ and check that the reference points are computing correctly. Note that we can compile nimble functions and models via `compileNimble`.
+
+```{r}
+cmodel <- compileNimble(model)
+```
+
+```{r, echo = FALSE, include = FALSE}
+sox_model_code_3 <- nimbleCode({
+  # Priors
+  logalpha ~ dunif(0, 10)
+  sigma ~ dunif(0, 10)
+  logE ~ dunif(0, 20)
+  E <- exp(logE)
+
+  # Likelihood:
+  for( i in 1:nobs ){
+    mean_logRS[i] <- logalpha*(1-S[i]/E)
+    logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
+  }
+
+  # Reference Points:
+  smax <- E/logalpha
+  smsy <- (1-nimLamW(exp(1-logalpha)))*smax
+  sgen <- -nimLamW(-smsy/(exp(logalpha)*smax))*smax
+})
+
+model <- nimbleModel(sox_model_code_3,
+                    constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                    data = list(logRS = sox$logRS),
+                    inits = list(logalpha = 1.5, logE = log(100), sigma = 0.5))
+cmodel <- compileNimble(model)
+
+## Check that our sgen calculation is correct.
+cmodel$sgen*exp(cmodel$logalpha * (1-cmodel$sgen/cmodel$E) ) - cmodel$smsy
+```
+
+## NIMBLE Workflow and Defining the MCMC
+
+![](img/nimble_basics.png)
+
+We have seen create model (`nimbleModel`) and `nimbleMCMC`. However, to understand and customize your model, it's best to actually configure and build your own MCMC. Here let's find out about what algorithms are assigned.
+
+```{r}
+conf <- configureMCMC(model)
+conf$printSamplers()
+```
+
+Let's try a slice sampler, which is what JAGS often does when Gibbs sampling isn't available.
+
+```{r}
+## Let's track the MCMC history
+nimbleOptions(buildInterfacesForCompiledNestedNimbleFunctions = TRUE)
+nimbleOptions(MCMCsaveHistory = TRUE)
+
+conf$removeSamplers("logE")
+conf$addSampler(target = "logE", type = "slice")
+mcmc <- buildMCMC(conf)
+
+## Cant run MCMC purely on the R object. Very slow!
+mcmc$run(10)
+
+## Compile the MCMC
+cmcmc <- compileNimble(mcmc)
+
+
+## Manually run 1000 iterations.
+cmcmc$run(1000)
+
+## sigma adaptive random walk sampler.
+cmcmc$samplerFunctions[[2]]$acceptanceHistory
+cmcmc$samplerFunctions[[2]]$scaleHistory
+
+## Extract current samples from mcmc object.
+samples <- coda::mcmc(as.matrix(cmcmc$mvSamples))
+plot(samples[, "logE"])
+```
+
+Now we have done a test run of the MCMC and we are happy with how things are looking we might want to run multiple chains and check convergence and report. This is where `runMCMC` is really helpful. Note that the burn-in and the number of iterations used here is not indicative of what we might want to use in a real analysis.
+
+```{r}
+inits <- function(){
+  list(sigma = runif(1,0.1,3), logalpha = rnorm(1, 1.5, 3), logE = rnorm(1, 4, 2))
+}
+samples <- runMCMC(cmcmc, niter = 5000, nburnin = 1000, 
+                    inits = inits, nchains = 3, samplesAsCodaMCMC = TRUE)
+plot(samples)
+```
