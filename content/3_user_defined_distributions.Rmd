@@ -1,0 +1,414 @@
+---
+title: "User Defined Distributions"
+author: "NIMBLE Development Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = TRUE,
+  results = 'hide',
+  eval = FALSE
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Why extend models?
+
+* A model in nimble is a set of ordered calculations with cached (stored) results.
+* Algorithms use a model as a machine: 
+
+    * get and set values
+    * manage calculations and simulations
+    
+* As in lots of coding, different designs can have very different efficiencies.
+* WinBUGS/OpenBUGS/JAGS have closed designs.
+* NIMBLE opens up the model language by making it extensible using `nimbleFunction`s.
+
+## Custom (user-defined) distributions: marginalize
+
+* For a mixture model, we can calculate the marginal probability of an observation easily instead of sampling the group.
+* Previously we sampled the group assignment $z_t$ in the fisheries example.
+* The marginal version looks like
+
+\[
+  f(\mbox{log}(R_t/S_t)) = p f(\mbox{log}(R_t/S_t)|z_t = 0) + (1-p) f(\mbox{log}(R_t/S_t)|z_t=1).
+\]
+
+* This then reduces the latent nodes that need to be sampled by the length of the data.
+
+## NIMBLE Functions
+
+NIMBLE is more than just a Bayesian inference platform. It can be thought of as a compiler from R to C++, with many algorithms built into the system. Many of these algorithms are built in R, using a `nimbleFunction`.
+
+There are three core parts of writing a nimble function:
+
+- `setup` This is where you can set up the function and set things in the local environment that runs completely in R before compilation.
+
+- `run` This is the default function that is run when the function is called. If no setup then `run` must be defined.
+
+- `methods` A list of functions for internal or external use.
+
+```{r}
+nimbleFunction(
+  setup = function(){},
+  run = function(){},
+  methods = list()
+)
+```
+
+Let's make a function that calculates, and then returns the mean and standard deviation of a vector.
+
+```{r}
+library(nimble)
+Rnimsum <- nimbleFunction(
+  run = function(x = double(1)){
+    out <- numeric(value = 0, length = 2)
+    out[1] <-  mean(x)
+    out[2] <- sd(x)
+    returnType(double(1))
+    return(out)
+  }
+)
+
+x <- rnorm(10000, 2.5, 3)
+Rnimsum(x)
+Cnimsum <- compileNimble(Rnimsum)
+Cnimsum(x)
+```
+
+Now let's make a function that takes some setup. Note that when we call this function with setup we need to call `run` directly when using the function. Note for convenience we will create a `nimbleList` output of our summary to make things look nicer.
+
+```{r}
+sumNimList <- nimbleList(mean = double(), sd = double())
+
+Rnimsum <- nimbleFunction(
+  setup = function(){
+    out <- sumNimList$new()  
+  },
+  run = function(x = double(1)){
+    out$mean <-  mean(x)
+    out$sd <- sd(x)
+    returnType(sumNimList())
+    return(out)
+  }
+)
+
+x <- rnorm(10000, 2.5, 3)
+Rfunc <- Rnimsum()
+Cfunc <- compileNimble(Rfunc)
+Cfunc$run(x)
+```
+
+## Marginal Mixture Example:
+
+Let's use a simple mixture model example. We will observe normally distributed data, with mean and standard deviation that comes from two, unobserved groups.
+
+```{r}
+z <- rcat(100, c(0.35, 0.65))
+mu <- c(-10, 5)
+sd <- c(5, 0.5)
+y <- rnorm(100, mu[z], sd[z])
+hist(y)
+
+modelcode <- nimbleCode({
+  p[1] ~ dbeta(1,1)
+  p[2] <- 1-p[1]
+  for( i in 1:2){
+    mu[i] ~ dnorm(0, sd = 5)
+    sigma[i] ~ dunif(0,20)
+  }  
+  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+
+  for(i in 1:100){
+    z[i] ~ dcat(p[1:2])
+    y[i] ~ dnorm(mu[z[i]], sd = sigma[z[i]])
+  }
+})
+
+Rmodel <- nimbleModel(modelcode, data = list(y=y, one=1), 
+  inits = list(z = rcat(100, c(0.5,0.5)), p = c(0.5,0.5), mu = c(-5,5), sigma = c(2,2)))
+
+conf <- configureMCMC(Rmodel, monitors = c("p", "mu", "sigma"))
+samplers <- conf$getSamplers()
+Rmcmc <- buildMCMC(conf)
+length(samplers)  ## 105 samplers
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project=Rmodel)
+samples.mix <- runMCMC(Cmcmc, niter=15000, nchains=3, 
+                       nburnin = 5000, samplesAsCodaMCMC = TRUE)
+plot(samples.mix)
+```
+
+Now we will write out own distribution function to marginalize over $z$.
+
+```{r}
+dnorm_mix <- nimbleFunction(
+  run = function(x = double(), mean = double(1), sd = double(1), 
+                 p = double(1),  log = logical(0, default = FALSE)) {
+    
+    ans <- p[1]*dnorm(x, mean[i], sd[i], log = FALSE) + p[2]*dnorm(x, mean[i], sd[i], log = FALSE)
+    
+    returnType(double())
+    if(log)
+      return(log(ans))
+    else
+      return(ans)
+  }
+)
+
+modelcode <- nimbleCode({
+  p[1] ~ dbeta(1,1)
+  p[2] <- 1-p[1]
+  for( i in 1:2){
+    mu[i] ~ dnorm(0, sd = 5)
+    sigma[i] ~ dunif(0,20)
+  }  
+  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+
+  for(i in 1:100){
+    y[i] ~ dnorm_mix(mu[1:2], sd = sigma[1:2], p = p[1:2])
+  }
+})
+
+Rmodel <- nimbleModel(modelcode, data = list(y=y, one=1), 
+  inits = list(p = c(0.5,0.5), mu = c(-5,5), sigma = c(2,2)))
+
+conf <- configureMCMC(Rmodel, monitors = c("p", "mu", "sigma"))
+samplers <- conf$getSamplers()
+length(samplers)  ## 5 samplers, but we lose sampler types.
+Rmcmc <- buildMCMC(conf)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project=Rmodel)
+samples.mix <- runMCMC(Cmcmc, niter=15000, nchains=3, 
+                       nburnin = 5000, samplesAsCodaMCMC = TRUE)
+plot(samples.mix)
+summary(samples.mix)
+```
+
+***Exercise*** Try and write a general version of the mixture model that can be for more than two components. Hint: `seq_along` might be helpful or `length` / `dim`.
+
+```{r, echo = FALSE}
+dnorm_mix <- nimbleFunction(
+  run = function(x = double(), mean = double(1), sd = double(1), 
+                 p = double(1),  log = logical(0, default = FALSE)) {
+    ans <- 0
+    np <- length(p)
+    for( i in 1:np){
+      ans <- ans + p[i]*dnorm(x, mean[i], sd[i], log = FALSE)
+    }
+    returnType(double())
+    if(log)
+      return(log(ans))
+    else
+      return(ans)
+  }
+)
+```
+
+## Move calculations into or out of model
+
+* The model caches calculations and re-computes them only when necessary.
+* Very large numbers of nodes in the model can slow down model building, compilation, and execution.
+* Vectorizing results in one vector node in place of multiple scalar nodes.
+* Multiple intermediate steps that are fast to compute can be moved out of a model into a `nimbleFunction`, reducing the size of the model.
+* Costly calculations can be kept in the model to benefit from caching.
+
+## Vectorize declarations
+
+* Example: distance calculations in a spatial capture-recapture model
+
+Instead of
+
+```{r}
+dist_code <- nimbleCode({
+  for(i in 1:num_animals) {
+    for(j in 1:num_detectors) {
+      dist2[i, j] <- (sxy[i,1] - detector_xy[j,1])^2 + (sxy[i,2] - detector_xy[j,2])^2
+    } # sxy are individual activity centers. detector_xy and detector locations.
+  }
+})
+```
+
+try
+
+```{r}
+dist_code_vec <- nimbleCode({
+  for(i in 1:num_animals) {
+    dist2[i, 1:num_detectors] <- (sxy[i,1] - detector_xy[1:num_detectors,1])^2 + (sxy[i,2] - detector_xy[1:num_detectors,2])^2
+  }
+})
+```
+
+## Extending the Mixture Model
+
+A mixture model assumes independence between the components. An extension to that is a hidden Markov model, where each component is hidden, but are dependence between observations. This is often used in movement modelling where animals may be sleeping, travelling, or feeding. Each of these behaviours impacts what we observe, but the animal transitions between each state, at some rate. For salmon travelling up river, this could be as simple as holding vs migrating. Let's make up some data that might look like speed of the fish in river, dependent on whether or not it is holding or migrating.
+
+For fish speed $y$, 
+\[
+\begin{aligned}
+  y_t|z_t = i & \sim \mbox{N}(\mu_i,\sigma_i)\\
+  x_t|z_{t-1}=i & \sim \mbox{categorical}(\pi_{i1},\ldots,\pi_{iN}).
+\end{aligned}
+\]
+
+Here $\pi_{ij}$ is the probability of transitioning from state $i$ to state $j$ for $N$ states. Let's simulate this data and try to fit the model.
+
+```{r}
+n <- 100
+z <- numeric(n)
+y <- numeric(n)
+mu <- c(2, 20)
+sigma <- c(1.5, 5)
+pmat <- rbind(c(0.25, 0.75), c(0.15, 0.55))
+z[1] <- sample(2,1)
+y[1] <- rnorm(1, mu[z[1]], sigma[z[1]])
+for( i in 2:n ){
+  z[i] <- sample(2, 1, prob = pmat[z[i-1],])
+  y[i] <- rnorm(1, mu[z[i]], sigma[z[i]])
+}
+
+plot(1:n, y, type = "l")
+```
+
+Just like in the mixture model, let's start by sampling the unobserved $z_t$.
+
+```{r}
+model_code <- nimbleCode({
+  for( i in 1:2 ){
+    mu[i] ~ dnorm(0, sd = 20)
+    sigma[i] ~ dunif(0, 25)
+  }
+  p[1,1] ~ dbeta(1,1)
+  p[1,2] <- 1-p[1,1]
+  p[2,2] ~ dbeta(1,1)
+  p[2,1] <- 1-p[2,2]
+
+  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+  
+  z[1] ~ dcat(pinit[1:2]) ## Random init:
+  y[1] ~ dnorm(mu[z[1]], sd = sigma[z[1]])
+  for( i in 2:nobs ){
+    z[i] ~ dcat(p[z[i-1],1:2]) ## Random init:
+    y[i] ~ dnorm(mu[z[i]], sd = sigma[z[i]])
+  }
+})
+
+inits = function(){
+  list(
+    z = sample(2, length(y), replace = TRUE),
+    sigma = runif(2, 2, 5),
+    mu = rnorm(2, c(5,10), 2),
+    p = matrix(c(0.5,0.5,0.5,0.5), 2, 2)
+  )  
+}
+Rmodel <- nimbleModel(model_code, data = list(y = y, one = 1), 
+                      constants = list(nobs = length(y), pinit = c(0.5,0.5)), inits = inits())
+
+conf <- configureMCMC(Rmodel, monitors = c("p", "mu", "sigma"))
+samplers <- conf$getSamplers()
+length(samplers)  ## 106 samplers
+Rmcmc <- buildMCMC(conf)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project=Rmodel)
+samples.hmm <- runMCMC(Cmcmc, niter=15000, nchains=3, 
+                       nburnin = 5000, samplesAsCodaMCMC = TRUE)
+summary(samples.hmm)
+```
+
+Note that a HMM just like above is what Tang et al. (2021) "Identification of recruitment regime shifts with a hidden Markov stock-recruitment model" used to identify regime shifts in productivity for Atlantic cod. See this paper for a specific fisheries example. Also, the upcoming DFO paper by Wor et al. (2025) "Recommendations for Estimating and Detecting Time-Varying Spawner-Recruit Dynamics in Fish Populations".
+
+Now we will marginalize over the latent states, just like the mixture model. For context, the algorithm we are going to code is called a 'forward algorithm' (https://en.wikipedia.org/wiki/Forward_algorithm). The idea is that we want to efficiently sum over all possible states and paths using essentially linear algebra.
+
+Below, for each observation, we figure out the probability of currently being in a state, multiply that by the probability of transitioning to a new state and then compute the density of the observation in that state. We sum so that we again accumulate the probability of being in each state given the data and solve in a forward way through all observations.
+
+
+```{r}
+##*** NOTE HERE I AM HARD CODING IN THE INITIAL STATE! This is not a general algorithm.
+dhmm_marg <- nimbleFunction(
+  run = function(x = double(1), p = double(2), mean = double(1), sd = double(1), log = logical(0, default = "FALSE")){
+    pinit <- c(0.5, 0.5)
+    nobs <- length(x)
+    ll_obs <- matrix(0, nrow = nobs, ncol = 2)
+    ll_obs[,1] <- dnorm(x, mean = mean[1], sd = sd[1], log = TRUE)
+    ll_obs[,2] <- dnorm(x, mean = mean[2], sd = sd[2], log = TRUE)
+    
+    ans <- exp(log(pinit) + ll_obs[1,1:2])
+    for( i in 2:nobs ){
+      ans <- (ans %*% p)[1,]
+      ans <- exp(log(ans[1:2])+ll_obs[i,1:2])
+    }
+    returnType(double())
+    dens <- sum(ans)
+    
+    if(log)
+      return(log(dens))
+    else
+      return(dens)
+  }
+)
+
+model_code_marg <- nimbleCode({
+  for( i in 1:2 ){
+    mu[i] ~ dnorm(0, sd = 20)
+    sigma[i] ~ dunif(0, 25)
+  }
+  p[1,1] ~ dbeta(1,1)
+  p[1,2] <- 1-p[1,1]
+  p[2,2] ~ dbeta(1,1)
+  p[2,1] <- 1-p[2,2]
+
+  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+
+  y[1:nobs] ~ dhmm_marg(p = p[1:2,1:2], mean = mu[1:2], sd = sigma[1:2])
+})
+
+inits = function(){
+  list(
+    sigma = runif(2, 2, 5),
+    mu = rnorm(2, c(0,10), 1),
+    p = matrix(c(0.5,0.5,0.5,0.5), 2, 2)
+  )  
+}
+Rmodel <- nimbleModel(model_code_marg, data = list(y = y, one = 1), 
+                      constants = list(nobs = length(y)), 
+                      inits = inits())
+
+Rmodel$calculate("y")
+
+conf <- configureMCMC(Rmodel, monitors = c("p", "mu", "sigma"))
+samplers <- conf$getSamplers()
+length(samplers)  ## 6 samplers
+Rmcmc <- buildMCMC(conf)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project=Rmodel)
+samples.marg <- runMCMC(Cmcmc, niter=15000, nchains=3, 
+                       nburnin = 5000, samplesAsCodaMCMC = TRUE)
+
+## Compare the key results.
+summary(samples.marg)[[1]][, "Mean"]
+summary(samples.hmm)[[1]][, "Mean"]
+```
+
+Efficiency for sampling the latent states vs marginalizing them may depend on the complexity of the model and the number of latent states. When sampling the latent states, the categorical sampler evaluates the density at each state for each observation, which the forward algorithm does as well. However, once the latent states are sampled, the density conditional on the latent states is easy and fast to compute. Alternatively, the marginalized density is slower to compute for sampling each parameter. If you use something like STAN, then you have to marginalize all the latent states as the HMC algorithm does not allow for discrete stochastic nodes.
