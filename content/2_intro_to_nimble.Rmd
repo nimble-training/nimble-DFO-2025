@@ -807,7 +807,7 @@ sox_model_AR1 <- nimbleCode({
   # Priors
   logalpha ~ dnorm(1.5, sd = 10)
   sigma ~ dunif(0, 10)
-  logE ~ dnorm(5, sd = 3)
+  logE ~ dnorm(2, sd = 3)
   E <- exp(logE)
   rho ~ T(dnorm(0,1), -1, 1)  ## Correlation term. Truncated.
   
@@ -825,7 +825,7 @@ sox_model_AR1 <- nimbleCode({
 model <- nimbleModel(sox_model_AR1,
                     constants = list(nobs = nrow(sox), S = sox$spawners/spscale, deltat = deltat),
                     data = list(logRS = sox$logRS),
-                    inits = list(logalpha = 1.5, delta = 0.25, logE = log(100), sigma = 0.5, rho = 0))
+                    inits = list(logalpha = 1.5, delta = 0.25, logE = 2, sigma = 0.5, rho = 0))
 cmodel <- compileNimble(model)
 
 conf <- configureMCMC(model, monitors = c("E", "sigma", "rho", "logalpha"))
@@ -858,7 +858,7 @@ sox_model_mix <- nimbleCode({
   # Priors
   loga0 ~ dnorm(1.5, sd = 10)
   sigma ~ dunif(0, 10)
-  logE ~ dnorm(5, sd = 10)
+  logE ~ dnorm(2, sd = 3)
   E <- exp(logE)
   delta ~ dnorm(0, sd = 2)  ## Essentially a half normal.
   p ~ dbeta(1,1)
@@ -883,7 +883,7 @@ sox_model_mix <- nimbleCode({
 model <- nimbleModel(sox_model_mix,
                     constants = list(nobs = nrow(sox), S = sox$spawners/10000),
                     data = list(logRS = sox$logRS),
-                    inits = list(loga0 = 1.5, delta = 0.25, logE = log(100), sigma = 0.5, p = 0.5))
+                    inits = list(loga0 = 1.5, delta = 0.25, logE = 2, sigma = 0.5, p = 0.5))
 cmodel <- compileNimble(model)
 
 conf <- configureMCMC(model, monitors = c("loga0", "E", "sigma", "p", "delta", "logalpha"))
@@ -910,7 +910,7 @@ sox_model_mix_labels <- nimbleCode({
   # Priors
   loga0 ~ dnorm(1.5, sd = 10)
   sigma ~ dunif(0, 10)
-  logE ~ dnorm(5, sd = 10)
+  logE ~ dnorm(2, sd = 2)
   E <- exp(logE)
   delta ~ dnorm(0, sd = 2)  ## Essentially a half normal.
   one ~ dconstraint(delta > 0)

@@ -159,7 +159,7 @@ pout <- sumdf %>% filter(parameter == "p")
 datp <- cbind(dat92, pout[, 1:10])
 ggplot(data = datp, aes(x = Station, y = Mean, colour = Species)) +
   geom_point(position = position_dodge(width = 0.25)) + 
-  theme_bw() + ylab("Posterior Mean Detection Probability") +
+  theme_bw() + ylab("Posterior Mean Detection Probability")
   geom_errorbar(aes(ymin = X2.5., ymax = X97.5., colour = Species), 
     position = position_dodge(width = 0.25), width = 0.1) 
 ```
@@ -427,10 +427,10 @@ conf$removeSamplers()
 paramNodes <- Rmodel$getNodeNames(stochOnly = TRUE, includeData = FALSE)
 conf$addSampler(target = paramNodes, type = 'NUTS')
 conf$printSamplers()
+
 ## Can also use: Rmcmc <- buildHMC(Rmodel)
 
 Cmodel <- compileNimble(Rmodel)
-Rmcmc <- buildMCMC(conf)
 Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
 ## Note this is slow but we also don't need very many samples. See 
 samples <- runMCMC(Cmcmc, niter = 1000, nburnin = 200, nchains = 3, 

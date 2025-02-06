@@ -1,0 +1,216 @@
+---
+title: "Posterior Predictions"
+author: "NIMBLE Development Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = TRUE,
+  results = 'hide',
+  eval = FALSE
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Example Fraser Sockeye (again)
+
+See module 2, "intro_to_nimble" for information on this example.
+
+```{r, eval = TRUE}
+library(tidyverse)
+library(readxl)
+sockeye <- read_excel("data/Production Data_Detailed Format.xlsx")
+stockid <- "Stellako"
+sox <- sockeye %>% 
+  filter(production_stock_name == stockid) %>%
+  group_by(broodyr, total_broodyr_spawners) %>%
+  summarize(recruits=sum(num_recruits), .groups = "drop") %>%
+  rename(broodyear = broodyr, spawners = total_broodyr_spawners) %>%
+  mutate(logRS = log(recruits) - log(spawners)) %>%
+  filter(!is.na(spawners) & !is.na(recruits)) %>%
+  mutate(scale = 10^floor(log10(max(spawners))))
+
+spscale <- sox$scale[1]
+```
+
+We will use the code chunk below from the previous module to get started.
+
+```{r}
+library(nimble)
+sox_model <- nimbleCode({
+  # Priors
+  logalpha ~ dunif(0, 10)
+  sigma ~ dunif(0,10)
+  logE ~ dnorm(2, sd = 2)
+  E <- exp(logE)
+
+  # Likelihood:
+  for( i in 1:nobs ){
+    mean_logRS[i] <- logalpha*(1-S[i]/E)
+    logRS[i] ~ dnorm(mean_logRS[i], sd = sigma)
+  }
+})
+
+inits <- function(){
+  list(logalpha = rnorm(1, 1.5, 1), logE = rnorm(1, log(100), 2), sigma = runif(1,0.5,2))
+}
+
+Rmodel <- nimbleModel(sox_model,
+                    constants = list(nobs = nrow(sox), S = sox$spawners/spscale),
+                    data = list(logRS = sox$logRS),
+                    inits = inits())
+  
+conf <- configureMCMC(Rmodel)
+Rmcmc <- buildMCMC(conf)
+Cmodel <- compileNimble(Rmodel)
+Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
+samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, 
+                   inits = inits(), samplesAsCodaMCMC = TRUE)
+plot(samples)
+```
+
+## Posterior Transformations
+
+When choosing how to manipulate the posterior samples, it is important to consider what transformations do to the different parameters. Note that any non-linear transformation of a mean, will not necessarily be the mean on the new scale.
+
+For example, if we estimate $\alpha$ on the log scale, and then transform that mean, denoted by $\widehat{\cdot}$, this is not actually the mean on the real scale.
+
+\[
+  \widehat{\alpha} = \mbox{exp}(\widehat{\mbox{log}(\alpha)}).
+\]
+
+If we want simple unbiased estimates on any scale, we need to transform the MCMC chain itself, and then calculate the new estimator. This is because, by transforming the actual simulations we are creating the posterior distribution of the new variable of interest. As a result, the mean and variance from that new posterior distribution are correct. However, note that quantiles (e.g., the median) are not impacted by transformations.
+
+```{r}
+out <- do.call("rbind", samples)
+post.logalpha <- out[, "logalpha"]
+mean(post.logalpha)
+exp(mean(post.logalpha))
+post.alpha <- exp(post.logalpha)
+mean(post.alpha)
+```
+
+In a Frequentist setting for log-normal data in stock assessment you'll often see what they call a "bias correction" term ($-\sigma/2$) added to the equation to make the estimated mean be correct on the real scale. For a good discussion on marginal means see Gory et al. (2020) "A class of generalized linear mixed models adjusted for marginal interpretability".
+
+Let's see the difference for our reference points. Does the mean/median/mode make more sense for setting reference points? What is the interpretation of each?
+
+```{r}
+## Bring in that nimble R call function again.
+Rlamw <- function(x){
+  if(!is.na(x)) ## NA dealt with to make life easy if model isn't initialized.
+    return(gsl::lambert_W0(x))
+  else 
+    return(0)
+}
+nimLamW <- nimbleRcall(prototype = function(x = double()){}, Rfun = 'Rlamw', 
+                      returnType = double())
+
+smax <- exp(out[,"logE"])/out[,"logalpha"]
+
+hist(smax[smax < 10]) ## Some extreme values to remove.
+abline(v = mean(smax[smax < 10]), col = 'red')
+abline(v = median(smax[smax < 10]), col = 'blue')
+abline(v = MCMCglmm::posterior.mode(coda::mcmc(smax[smax < 10])), col = 'red', lty = "dashed")
+
+smsy <- (1-gsl::lambert_W0(exp(1-out[,"logalpha"])))*smax
+
+plot(density(smsy[smax < 10])) ## Some extreme values to remove.
+abline(v = mean(smsy[smax < 10]), col = 'red')
+abline(v = median(smsy[smax < 10]), col = 'blue')
+abline(v = MCMCglmm::posterior.mode(coda::mcmc(smsy[smax < 10])), col = 'red', lty = "dashed")
+
+sgen <- -gsl::lambert_W0(-smsy/(exp(out[,"logalpha"])*smax))*smax
+
+plot(density(sgen[smax < 10])) ## Some extreme values to remove.
+abline(v = mean(sgen[smax < 10]), col = 'red')
+abline(v = median(sgen[smax < 10]), col = 'blue')
+abline(v = MCMCglmm::posterior.mode(coda::mcmc(sgen[smax < 10])), col = 'red', lty = "dashed")\
+```
+
+## Posterior Predictive Check
+
+A challenge with bespoke Bayesian models is that it can be harder to do model checking. Luckily, the R packages `DHARMa` combined with nimble's posterior prediction capability makes this relatively easy.
+
+We will start by writing a completely flexible posterior prediction nimble function. Input will be the model, and the MCMC object.
+
+```{r}
+ppSamplerNF <- nimbleFunction(
+          setup = function(model, mcmc) {
+              dataNodes <- model$getNodeNames(dataOnly = TRUE)
+              parentNodes <- model$getParents(dataNodes, stochOnly = TRUE)
+              cat("Stochastic parents of data are:", paste(parentNodes, collapse = ','), ".\n")
+              simNodes <- model$getDependencies(parentNodes, self = FALSE)
+              # need ordering of variables in mvSamples / samples matrix
+              vars <- mcmc$mvSamples$getVarNames()
+              cat("Using posterior samples of:", paste(vars, collapse = ','), ".\n")
+              n <- length(model$expandNodeNames(dataNodes, returnScalarComponents = TRUE))
+          },
+          run = function(samples = double(2)) {
+              nSamp <- dim(samples)[1]
+              ppSamples <- matrix(0, nrow = nSamp, ncol = n) ## added fitted values.
+              for(i in 1:nSamp) {
+                    values(model, vars) <<- samples[i, ]
+                    model$simulate(simNodes, includeData = TRUE)
+                    ppSamples[i,] <- values(model, dataNodes)
+              }
+              returnType(double(2))
+              return(ppSamples)
+          })
+```
+
+We can then set this function up and compile it into C++.
+
+```{r}
+ppsampler <- ppSamplerNF(Rmodel, Rmcmc)
+ppsamplerc <- compileNimble(ppsampler)
+```
+
+To generate random quantile residuals, or at least the `DHARMa` equivalent, we need to be able to pass it the fitted values, some simulated data from our posterior and the actual observed data.
+
+```{r}
+## Posterior predictive samples
+ppsamples <- ppsamplerc$run(out)
+
+## Fitted values:
+values(Cmodel, colnames(out)) <- colSums(out)/nrow(out)
+Cmodel$calculate()
+fitted <- Cmodel$mean_logRS
+
+library(DHARMa)
+resids <- createDHARMa(simulatedResponse = t(ppsamples), 
+                           observedResponse = sox$logRS,
+                           fittedPredictedResponse = fitted,
+                           integerResponse = FALSE)
+plot(resids)
+```
+
+We can compare this with our basic linear model.
+
+```{r}
+fit.lm <- lm(logRS ~ 1 + I(spawners/spscale), data = sox)
+resids.lm <- simulateResiduals(fittedModel = fit.lm, plot = FALSE)
+plot(resids.lm)
+```
+
