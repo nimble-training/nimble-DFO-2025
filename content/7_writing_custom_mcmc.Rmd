@@ -1,0 +1,159 @@
+---
+title: "Writing a Custom MCMC"
+author: "NIMBLE Development Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = TRUE,
+  results = 'hide',
+  eval = FALSE
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Understanding the Random Walk Sampler (Metropolis Hastings)
+
+The basic idea of a random walk sampler, is that we can draw samples from the posterior of $\theta$ by randomly choosing new values based on randomly changing the value of $\theta$ conditioned on the other parameters in the value. We accept or reject our new $\theta$ based on an accept ratio.
+
+Here we will describe the basic algorithm assuming that the chain is initialized at $\theta_0$. For some data $y$, 
+
+Algorithm: For MCMC iteration i,
+1. Compute the log density $\pi(y,\theta_i)$.
+
+2. Propose a new value of $\theta$, $\theta^*$, from a proposal distribution $q(\theta^*|\theta_i)$. We typically assume that $q(\theta^*|\theta_i) = \mbox{Normal}(\theta_i, \sigma)$. In this case, we have to choose the scale parameter $\sigma$.
+
+3. Calculate the acceptance ratio, 
+\[
+  \alpha = \frac{\pi(y,\theta^*)q(\theta_i|\theta^*)}{\pi(y,\theta_i)q(\theta_i|\theta^*)}.
+\]
+Note that when using a symmetric proposal distribution (e.g., a normal distribution), the proposal distributions cancel out.
+
+4. Randomly draw a value $u \sim U(0,1)$, and accept the new value as $\theta_{i+1} = 
+theta^*$, if $u < \alpha$, otherwise, $\theta_{i+1} = \theta$. Note that $\alpha$ can be bigger than 1. In that case, we accept 100% of the time.
+
+5. Repeat steps 1-4 with $i = i+1$ until $i$ reaches the requested number of iterations.
+
+## Example
+
+Consider a very basic linear regression of cars data in R, where distance depends on speed.
+
+```{r}
+library(nimble)
+## Understanding MCMC with Nimble:
+code <- nimbleCode({
+  ## Choose priors:
+  b0 ~ dflat() # dunif(-Inf, Inf) flat prior for intercept.
+  b1 ~ dnorm(0, tau = 0.1)  # vague prior for slope.
+  sigma ~ dunif(0, 100) 
+  
+  for( i in 1:n ) {
+    mu[i] <- b0 + b1*speed[i]
+    dist[i] ~ dnorm(mu[i], sd = sigma)
+  }
+})
+
+inits <- function(){ list(b0 = rnorm(1), b1 = rnorm(1), sigma = rgamma(1,1))}
+constants <- list(n = nrow(cars), speed = cars$speed)
+
+model <- nimbleModel(code = code, 
+                     data = list(dist = cars$dist), 
+                     constants = list(n = nrow(cars), speed = cars$speed), 
+                      inits = inits())
+
+cmodel  <- compileNimble(model)
+conf <- configureMCMC(model)
+## Build the MCMC
+mcmc    <- buildMCMC(conf, monitors = c("b0",  "b1", "sigma")) ## Track key parameters
+## Compile the MCMC samplers into C++
+cmcmc   <- compileNimble(mcmc, project = model)
+
+## Now run some iterations of the MCMC
+cmcmc$run(1000)
+samples <- as.matrix(cmcmc$mvSamples)
+out <- coda::as.mcmc(samples)
+
+plot(out[,'b0'])
+```
+
+Now let's write our own Metropolis Hastings sampler to provide to our MCMC. We need to setup a nimble function that has the model, and a target variable to sample. We may want to include the scale as input via control to allow the user to set it. We need to make sure we add `contains = sampler_BASE` in the function. If we accept the change, we copy over the changed model `model` to the current model `mvSaved`, otherwise we revert to the original model `mvSaved` copied back to `model`.
+
+```{r, eval = FALSE}
+My_RW_sampler <- nimbleFunction(
+    contains = sampler_BASE,
+    setup = function(model, mvSaved, target, control = list()) {
+        scale <- extractControlElement(control, "scale", 1) ## Set default = 1.
+        ## Which nodes do we need to update.
+        calcNodes <- model$getDependencies(target)  
+    },
+    run = function() {
+        ## Get Current Value and log density.
+        currentValue <- model[[target]]
+        currentLogProb <- model$getLogProb(calcNodes)
+        
+        ## Draw a new value
+        proposedValue <- currentValue + rnorm(1, 0, sd = scale)
+
+        ## Add it to the model (this caches it directly in model with <<-)
+        model[[target]] <<- proposedValue
+
+        ## Calculate new log density
+        proposalLogProb <- model$calculate(calcNodes)
+        
+        log_accept_prob <- proposalLogProb - currentLogProb
+        
+        ## Can use decide(log_accept_prob) instead of drawing u directly.
+        u <- runif(1,0,1)
+        if(u < exp(log_accept_prob))
+          accept <- TRUE
+        else
+          accept <- FALSE
+        
+        if(accept) {
+            ## return new model (saved when running "calculate")
+            copy(from = model, to = mvSaved, row = 1, nodes = calcNodes, logProb = TRUE)
+        } else {
+            ## return original model (saved before updating)
+            copy(from = mvSaved, to = model, row = 1, nodes = calcNodes, logProb = TRUE)
+        }    
+    },
+    ## Ignore this for now.
+    methods = list(reset = function() {
+    })    
+)
+
+## Let's add it to the MCMC
+conf$removeSamplers('b0')
+conf$addSampler(target = 'b0', type = 'My_RW_sampler', control = list(scale = 1.2))
+conf$printSamplers('b0')
+mcmc <- buildMCMC(conf, monitors = c("b0",  "b1", "sigma")) ## Track key parameters
+cmcmc   <- compileNimble(mcmc, project = model, resetFunctions = TRUE)
+
+## Now run some iterations of the MCMC
+cmcmc$run(1000)
+samples <- as.matrix(cmcmc$mvSamples)
+out <- coda::as.mcmc(samples)
+plot(out[,'b0'])
+```
