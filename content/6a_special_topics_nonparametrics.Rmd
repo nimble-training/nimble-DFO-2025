@@ -134,6 +134,7 @@ We might instead say that we don't know which sites have the same detection prob
 To do this we need a multivariate distribution on on our depletion study so we will write one similar to the one we used in module 4.
 
 ```{r}
+library(nimble)
 ddepletion <- nimbleFunction(
   run = function(x = double(1), prob = double(), size = double(), log = logical(0, default = FALSE)){
 
@@ -267,3 +268,5 @@ text(c(-0.65,-0.65),c(6,12), labels = c("Brook Trout", "Altantic Samlon"), xpd=T
 What we see is that the Atlantic salmon are more consistently the same catchability while there is much more heterogeneity in the brook trout cathcability. Site 7 is the most populous for both species which makes sense that catchability must be low for brook trout (more similar to Atlantic salmon) given how many were caught. It also highlights that our original random effect structure was not very good.
 
 Bayesian nonparametrics are a bit scary to start but given how easy it is to implement in NIMBLE it might be worth thinking about how to use them to mop up some heterogeneity in your data.
+
+

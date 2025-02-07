@@ -1,0 +1,396 @@
+---
+title: "Bayesian Variable Selection"
+author: "NIMBLE Development Team"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{css, echo = FALSE}
+h1, h4.author, h4.date {
+  text-align: center;
+}
+```
+
+```{r setup, include=FALSE, echo = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+knitr_opts <- list(
+  message = FALSE,
+  warning = FALSE,
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 7,
+  dpi = 300,
+  out.width = "700px",
+  fig.asp = 1 / 1.618,
+  cache = FALSE,
+  autodep = TRUE,
+  cache.comments = TRUE,
+  fig.align = "center",
+  echo = TRUE,
+  results = 'hide',
+  eval = FALSE
+)
+do.call(knitr::opts_chunk$set, knitr_opts)
+```
+
+## Variable selection by in or out
+
+- You have many candidate explanatory variables.
+- Bayesian approach is to have a probability that a variable is included in the model.
+- Really this is a probability that the coefficient is $\ne 0$.
+- Common implementation is with indicator variables.
+- This has problems.  Let's look at it.
+
+Set up a model using linear regression for simplicity. We will have a fixed intercept and then,
+
+- 5 "real" effects (true coefficient $\ne 0$)
+- 10 null effects  (true coefficient $= 0$).
+
+We want to let the model select what the true variables are. To do this we introduce a dummy variable 
+
+\[
+  z_k \sim \mbox{Bernoulli}(\psi),
+\]
+for $k \in (1,\ldots, 16)$. We can use the dummy variable to include or exclude the parameter in the model by writing
+
+\[
+  \mu_i = \beta_0 + \sum_{k=1}^{15} \beta_x z_k x_{ik}.
+\]
+
+When $z_k = 0$, then $x_{k}$ has no effect and we treat $\beta_k$ removed from the model.
+
+Create `nimble` model
+
+```{r}
+library(nimble)
+lmCode <- nimbleCode({
+  psi ~ dunif(0,1)   # prior on inclusion probability
+  sigma ~ dunif(0, 20)
+
+  ## Intercept term:
+  beta[1] ~ dnorm(0, sd = 100)
+  z[1] <- 1
+  zbeta[1] <- beta[1]
+
+  ## Predictors:  
+  for(i in 2:numVars) {
+    z[i] ~ dbern(psi) # indicator variable
+    beta[i] ~ dnorm(0, sd = 100)
+    zbeta[i] <- z[i] * beta[i]  # indicator * beta
+  }
+  
+  for(i in 1:n) {
+    pred.y[i] <- inprod(X[i, 1:numVars], zbeta[1:numVars])
+    y[i] ~ dnorm(pred.y[i], sd = sigma)
+  }
+})
+set.seed(1)
+X <- cbind(1, matrix(rnorm(100*15), nrow = 100, ncol = 15))
+lmConstants <- list(numVars = 16, n = 100, X = X)
+lmModel <- nimbleModel(lmCode, constants = lmConstants)
+```
+
+Simulate data using `nimble` model.
+
+```{r}
+true_betas <- c(c(2.5, 0.1, 0.2, 0.3, 0.4, 0.5),
+                rep(0, 10))
+lmModel$beta <- true_betas
+lmModel$sigma <- 1
+lmModel$z <- rep(1, 16)
+lmModel$psi <- 0.5
+lmModel$calculate()
+set.seed(0) ## Make this reproducible
+lmModel$simulate('y')
+lmModel$y
+lmModel$calculate() 
+lmModel$setData('y')
+lmData = list(y = lmModel$y)
+```
+
+Look at `lm` It will be helpful to refer to back simple linear regression:
+
+```{r}
+dat <- data.frame(lmModel$X)
+dat$y <- lmModel$y
+fit.lm <- lm(y ~ -1+X1+X2+X3+X4+X5+X6+X7+X8+X9+X10+X11+X12+X13+X14+X15+X16, 
+              data = dat, na.action = na.fail)
+summary(fit.lm)
+```
+
+Let's do something I would ***NEVER*** recommend and `dredge` this data to see what the best model is from a Frequentist perspective.
+```{r}
+library(MuMIn)
+test <- dredge(fit.lm)
+```
+
+"Best" Model that strictly minimizes AIC is 
+`X1 + X2 + X3 + X4 + X5 + X6 + X8 + X13`
+AIC will tend to add spurious variable  spurious variables and over fit. Choosing the model that minimizes AIC is a ***BAD*** choice. Note that if we look at nested models and take the simplest model that is close in AIC it will be better.
+
+Let's now look at nimble results with default samplers.
+
+```{r}
+MCMCconf <- configureMCMC(lmModel)
+MCMCconf$addMonitors('z')
+MCMC <- buildMCMC(MCMCconf)
+ClmModel <- compileNimble(lmModel)
+CMCMC <- compileNimble(MCMC, project = lmModel, resetFunctions = TRUE)
+set.seed(100)
+samples_nimble <- runMCMC(CMCMC, niter = 100000, nburnin = 10000)
+```
+
+
+### Results from default nimble samplers
+
+Look at beta[2]
+
+```{r}
+inds <- seq(50000, 60000, by=10) ## Look at arbitrary 1001 iterations thinned
+plot(samples_nimble[inds,'beta[2]'])
+plot(samples_nimble[inds,'z[2]'])
+```
+
+Look at beta[4]
+
+```{r}
+plot(samples_nimble[inds,'beta[4]'], ylim = c(-1, 1))
+plot(samples_nimble[inds,'z[4]'])
+```
+
+Look at beta[5]
+
+```{r}
+plot(samples_nimble[inds,'beta[5]'])
+plot(samples_nimble[inds,'z[5]'])
+## Plot when z = 1.
+plot(samples_nimble[inds,'beta[5]'][samples_nimble[inds,'z[5]'] == 1])
+```
+
+Look at posterior inclusion probabilities from each `beta[i]`
+
+```{r}
+zCols <- grep("z\\[", colnames(samples_nimble))
+posterior_inclusion_prob_nimble <- colMeans(samples_nimble[,zCols])
+plot(true_betas, posterior_inclusion_prob_nimble)
+```
+
+Look at posterior inclusion probability, `psi`
+
+```{r}
+plot(density(samples_nimble[,'psi']))
+```
+
+### Summary of results from default nimble
+
+- `beta[4]`, `beta[4]` and `beta[6]` are often included.
+- When `z[i] = 0`, the corresponding `beta[i]` will start following its **prior**.  It may wander far away from reasonable values, with either fast or slow mixing (depending on the situation).
+- Different samplers (e.g. slice samplers for `beta[i]`s) could do better but not solve the fundamental problem.
+
+### Summary of Mixing problems (the main issue)
+
+- The model doesn't understand the role of `z[i]`.
+- When `z[i] = 0`, the corresponding `beta[i]` will start following its **prior**.
+- A proposal to set `z[i] = 1` can only be accepted if `beta[i]` has a reasonable value.
+- This creates poor mixing over `z[i]`s.
+
+- With a slice sampler (e.g. JAGS default) `beta[i]` mixes better over its prior, and `z[i]` doesn't get set to 0 unless `beta[i]` happens to hit a small range of values to be included in the model.
+- With a random-walk MH sampler (default nimble), adaptation depends on `z[i]` (is it adapting to prior or posterior?), and this affects mixing when `z[i]` is 0.  Behavior seems to be problematic in this example.
+          
+- Conventional solution in BUGS/JAGS language: Use informative prior for `beta[i]` to avoid these problems.  This amounts to changing the model because the MCMC implementation has a problem, and that is never ideal.
+
+### Wasteful computation (a secondary issue)
+
+- When `z[i] = 0`, we'd like to not be wasting computation on `beta[i]`.
+
+Solution: Reversible Jump MCMC
+
+- RJMCMC is a method for sampling across different models.
+- Specifically it is about sampling between different numbers of dimensions.
+- We don't change the actual nimble model object, but we turn on and off which dimensions are sampled.
+- Implementation, like all samplers, is written using `nimbleFunction`s.
+
+### RJMCMC for variable selection in nimble
+
+- Update an MCMC configuration to use RJMCMC.
+
+```{r}
+# make a new copy of the model to be totally independent
+lmModel2 <- lmModel$newModel(replicate = TRUE)
+MCMCconfRJ <- configureMCMC(lmModel2)
+MCMCconfRJ$addMonitors('z')
+configureRJ(MCMCconfRJ,
+            targetNodes = 'beta',
+            indicatorNodes = 'z',
+            control = list(mean = 0, scale = .2))
+MCMCRJ <- buildMCMC(MCMCconfRJ)
+```
+
+Run the RJMCMC
+
+```{r}
+ClmModel2 <- compileNimble(lmModel2)
+CMCMCRJ <- compileNimble(MCMCRJ, project = lmModel2)
+set.seed(100)
+system.time(samples_nimble_RJ <- runMCMC(CMCMCRJ, niter = 100000, nburnin = 10000))
+```
+
+### Look at RJMCMC results
+
+Look at beta[2] 
+
+```{r}
+inds <- seq(50000, 60000, by = 10)
+plot(samples_nimble_RJ[inds,'beta[2]'])
+plot(samples_nimble_RJ[inds,'z[2]'])
+```
+
+Look at beta[5]
+
+```{r}
+plot(samples_nimble_RJ[inds,'beta[5]'])
+plot(samples_nimble_RJ[inds,'z[5]'])
+```
+
+Look at beta[6]
+
+```{r}
+plot(samples_nimble_RJ[inds,'beta[6]'])
+plot(samples_nimble_RJ[inds,'z[6]'])
+```
+
+Look at posterior inclusion probabilities of each `beta[i]`
+
+```{r}
+zCols <- grep("z\\[", colnames(samples_nimble_RJ))
+posterior_inclusion_prob_nimble_RJ <- colMeans(samples_nimble_RJ[,zCols])
+plot(true_betas, posterior_inclusion_prob_nimble_RJ)
+```
+
+Look at posterior inclusion probability, `psi`
+
+```{r}
+plot(density(samples_nimble_RJ[,'psi']))
+```
+
+### Summary of RJMCMC
+
+- Mixing was much better.
+- Adaptation for coefficient samplers only occurs when the coefficient is "in the model".
+- Run time was much faster than default nimble, which was faster than JAGS.  Magnitudes will depend on specific problems (how often `z[i]` are 0.)
+- Tuning parameter of RJ proposal scale (sd) must be chosen.
+
+
+## A More nuanced Example: GLMM of Salamanders (optional)
+
+Consider a data set with salamander counts. There are 23 sites, each sampled 4 times. The data is from [Price, Muncy, Bonner, Drayer and Barton (2016). Effects of mountaintop removal mining and valley filling on the occupancy and abundance of stream salamanders.](https://doi.org/10.1111/1365-2664.12585).
+
+```{r}
+data(Salamanders, package="glmmTMB")
+Salamanders
+```
+
+We will model the counts $y$, as Poisson distributed $y_i \sim \mbox{Poisson}(\lambda_i)$, where the mean $\lambda_i$ is modelled as a log linear model with covariates and random effects. Note that we will also add a zero inflation term following what the R package `glmmTMB` does for this example.
+
+```{r}
+library(glmmTMB)
+glmmfit <- glmmTMB(count~spp * mined + (1|site) + cover + DOP + Wtemp, 
+                    zi=~spp * mined + cover + DOP + Wtemp, 
+                  data = Salamanders, family="poisson")
+summary(glmmfit)
+```
+
+Here we have lots of different parameters and want to use Bayesian variable selection tools to choose the best parameters that explain these data. The structure of these data really requires an occupancy model. However, we will just keep this model simple to show the RJMCMC variable selection technique. Note that if you want to do marginalization and not sample $x$ at all, consider writing your own zero-inflated Poisson https://r-nimble.org/nimbleExamples/zero_inflated_poisson.html
+
+```{r}
+model_code <- nimbleCode({
+  ## Site RE:
+  sigma_count_site ~ dunif(0, 20)
+  sigma_zero_site ~ dunif(0, 20)
+
+  for( j in 1:2){
+    psi[j] ~ dbeta(1,1)
+    beta[1,j] ~ dnorm(0, sd = 100)
+    z[1,j] <- 1
+    zbeta[1,j] <- beta[1,j]
+
+    ## Predictors:  
+    for(i in 2:numVars) {
+      z[i,j] ~ dbern(psi[j]) # indicator variable
+      beta[i,j] ~ dnorm(0, sd = 100)
+      zbeta[i,j] <- z[i,j] * beta[i,j]  # indicator * beta
+    }
+  }
+  for( i in 1:nsite ){
+    re_zero[i] ~ dnorm(0, sd = sigma_zero_site) 
+    re_count[i] ~ dnorm(0, sd = sigma_count_site)  
+  }
+  
+  for(i in 1:n) {
+    logit(pres[i]) <- inprod(X[i, 1:numVars], zbeta[1:numVars,1]) + re_zero[site[i]]
+    x[i] ~ dbern(prob = pres[i])
+    log(mu[i]) <- inprod(X[i, 1:numVars], zbeta[1:numVars,2]) + re_count[site[i]]
+    y[i] ~ dpois(mu[i]*x[i])
+  }
+})
+
+X <- model.matrix(~spp * mined + cover + DOP + Wtemp, data = Salamanders)
+numVars <- ncol(X)
+site <- as.numeric(factor(Salamanders$site))
+nsite <- length(unique(site))
+
+constants <- list()
+constants$site = site
+constants$nsite = nsite
+constants$n = nrow(Salamanders)
+constants$numVars = numVars
+constants$X <- X
+
+data <- list()
+data$y <- Salamanders$count
+data$x <- ifelse(Salamanders$count > 0, 1, NA)  ## We will sample the zeros.
+  
+inits <- function(){
+  out <- list()
+  out$z <- matrix(1, nrow = numVars, ncol = 2)
+  out$beta <- matrix(rnorm(numVars*2, 0, sd = 0.1), ncol = 2)
+  out$x <- rep(NA, constants$n)
+  out$x[is.na(data$x)] <- 0
+  out$re_count <- rep(0, constants$nsite)
+  out$re_zero <- out$re_count
+  out$sigma_count_site <- 0.25
+  out$sigma_zero_site <- 0.25
+  out$psi <- c(0.5,0.5)
+  out
+}
+
+Rmodel <- nimbleModel(model_code, constants = constants, data = data, inits = inits())
+Rmodel$calculate()
+
+Cmodel <- compileNimble(Rmodel)
+
+MCMCconfRJ <- configureMCMC(Rmodel)
+MCMCconfRJ$addMonitors('z')
+configureRJ(MCMCconfRJ,
+            targetNodes = 'beta',
+            indicatorNodes = 'z',
+            control = list(mean = 0, scale = .2))
+MCMCRJ <- buildMCMC(MCMCconfRJ)
+CMCMCRJ <- compileNimble(MCMCRJ, project = Rmodel)
+samples_nimble_RJ <- runMCMC(CMCMCRJ, niter = 100000, nburnin = 10000)
+```
+
+```{r}
+zCols <- grep("z\\[", colnames(samples_nimble_RJ))
+posterior_inclusion_prob_nimble_RJ <- colMeans(samples_nimble_RJ[,zCols])
+znames <- c(paste("ZI", colnames(X)), paste("Count", colnames(X)))
+
+plot(x = 1:numVars, y=posterior_inclusion_prob_nimble_RJ[1:numVars], 
+  xaxt="n", main = "Zero Inflation")
+axis(1, at=1:numVars, labels=colnames(X), las=2)
+
+plot(x = 1:numVars, y=posterior_inclusion_prob_nimble_RJ[(numVars+1):(2*numVars)], 
+  xaxt="n", main = "Counts")
+axis(1, at=1:numVars, labels=colnames(X), las=2) 
+```
