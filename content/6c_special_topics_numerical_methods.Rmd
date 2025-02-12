@@ -34,19 +34,125 @@ knitr_opts <- list(
 do.call(knitr::opts_chunk$set, knitr_opts)
 ```
 
-## Beta Binomial Example?
+## Laplace Approximation
 
-```{r}
-pars <- claplace$getNodeNamesVec()
+We introduced the Laplace approximation at the beginning of the course. It is used as a method to marginalize over the latent states (continuous) in our likelihood (e.g. random effects). If we want to do maximimum likelihood estimation, we need to marginalize over the latent states before we do optimization.
 
-claplace$updateSettings(nQuad = 1)
-loglik1 <- claplace$calcLogLik(p = values(model, pars))
-claplace$updateSettings(nQuad = 3)
-loglik3 <- claplace$calcLogLik(p= values(model, pars))
-claplace$updateSettings(nQuad = 11)
-loglik11 <- claplace$calcLogLik(p = values(model, pars))
+We see Laplace approximation used in software such as 
+
+- INLA
+- TMB
+- glmmTMB
+- lme4
+- and many more.
+
+## Laplace in NIMBLE
+
+- In NIMBLE, an LA algorithm can be built using **`buildLaplace`** as follows:
+
+```{r,eval = FALSE }
+laplace <- buildLaplace(model, # model object, the only compulsory input
+                        paramNodes, # top-level stochastic nodes
+                        randomEffectsNodes, # latent variables
+                        calcNodes, # random effects and dependencies + necessary deterministic nodes
+                        calcNodesOther, # data nodes depending only on params, i.e. y*
+                        control = list() # Additional settings, e.g. inner optimiser, checking, Laplace split etc
+                        )
+```
+- Compile the algorithm:
+```{r, eval = FALSE}
+Claplace <- compileNimble(laplace, project = model)
+```
+- Run it:
+```{r, eval = FALSE}
+res <- runLaplace(laplace, # Laplace algorithm
+                  pStart,  # Start value for MLE
+                  method = "BFGS",               # Outer optimisation method
+                  originalScale = TRUE,          # Scale of MLE results: original or transformed (unconstrained)
+                  randomEffectsStdError = TRUE,  # Return std. error of random effects?
+                  jointCovariance = FALSE        # Return joint covariance matrix of params and random effects?
+                  )
 ```
 
+## Some notes about NIMBLE Laplace
+
+- Input nodes (except for model code) for Laplace, if not provided or only partially provided, will be decided by **`setupMargNodes`**; see `help("setupMargNodes")`.
+
+- The automatic decision process should be perfect in most cases, but not always. For example, for state-space models the initial state will be treated as a parameter, not a random effect. Need to provide the arguments manually.
+
+- One useful feature is the split of Laplace approximation (set `control = list(split = TRUE)` for `buildLaplace` or `split = TRUE` for `setupMargNodes`).
+
+- For easier (better?) optimisation (both inner and outer), we apply automatic transformations to constrained parameter and/or random effects nodes; see `help("parameterTransform")`. 
+
+- A very recent feature is that `nimOptim` can incorporate additional optimisation methods (e.g. those in `nlminb`). For Laplace, set the inner optimiser using `control = list(innerOptimMethod = "nlminb")` in `buildLaplace`. 
+
+## Negative Binomial Distribution
+
+Consider the negative binomial. This can be written as a mixture of Poisson observations with rate being randomly distributed according to a gamma distribution.
+
+```{r}
+y <- rnbinom(10000, size = 10, prob = 0.2)
+x <- rgamma(10000, shape = 10, scale = (1-0.2)/0.2)
+y_x <- rpois(10000, x)
+hist(y, col = 'blue')
+hist(y_x, add = TRUE, col=rgb(1,0,0,0.5))
+```
+
+We will write a model that uses the mixture version instead of the direct negative binomial to then marginalize out the value.
+
+```{r}
+n <- 100
+model_code_pg <- nimbleCode({
+  # priors 
+  a ~ dunif(0, 1000)
+  b ~ dunif(0, 1000)
+  for(i in 1:n){
+  lambda[i] ~ dgamma(a, b)
+  y[i] ~ dpois(lambda[i])
+  }})
+
+model_pg <- nimbleModel(model_code_pg, data = list(y=rpois(n, rgamma(n, 10, 2))), 
+                        constants = list(n=n), inits = list(a = 10, b = 2), buildDerivs = TRUE)
+cmodel_pg  <- compileNimble(model_pg)
+```
+
+Now we will build the same model using the negative binomial directly instead.
+
+```{r}
+## Marginal model is equivalent to a negative binomial with this parameterization.
+model_code_nb <- nimbleCode({
+  # priors 
+  a ~ dunif(0, 1000)
+  b ~ dunif(0, 1000)
+  for(i in 1:n){
+	  y[i] ~ dnbinom(size=a, prob=b/(1+b))
+  }})
+  
+model_nb <- nimbleModel(model_code_nb, data = list(y=model_pg$y), 
+                        constants = list(n=n), inits = list(a = 10, b = 2))
+cmodel_nb <- compileNimble(model_nb)
+```
+
+Now, in theory if we can marginalize over the random effects in the Poisson gamma mixture, we will get the exact same likelihood as when we calculate the negative binomial model. we will use Laplace to marginalize out the random effects (`lambda` in this case).
+
+```{r}
+Rlaplacepg <- buildLaplace(model_pg)
+laplacepg <- compileNimble(Rlaplacepg)
+laplacepg$calcLogLik(c(10,2))
+cmodel_nb$a <- 10
+cmodel_nb$b <- 2
+cmodel_nb$calculate("y")
+```
+
+This is pretty close but it isn't exact. We can actually do better than Laplace in NIMBLE. If we need high accuracy we can explore using adaptive Gauss-Hermite quadrature (AGHQ) instead.
+
+```{r}
+laplacepg$updateSettings(nQuad = 11)
+laplacepg$calcLogLik(c(10,2))
+cmodel_nb$calculate("y")
+```
+
+Now that is pretty much exact!
 
 ## Example Fraser Sockeye (again)
 
@@ -121,10 +227,14 @@ samp.sum$param <- rownames(samp.sum)
 samp.sum$method <- "MCMC"
 samp.sum$lci <- samp.sum$X2.5.
 samp.sum$uci <- samp.sum$X97.5.
+```
 
+
+```{r}
 rlaplace <- buildLaplace(model)
 claplace <- compileNimble(rlaplace)
 mle <- claplace$findMLE()
+## mle.sum <- summaryLaplace(claplace, mle) ## Should work depending on nimble install.
 mle.sum <- claplace$summary(mle)
 mle.sum$params
 out <- rbind(samp.sum[, c("param", "Mean", "SD", "lci", "uci", "method")], 
@@ -144,6 +254,6 @@ lines(x = c(mle.logE[, "lci"], mle.logE[, "uci"]), y = c(0.02, 0.02), col = 'red
 ## We can see the symmetry assumption from the MLE is probably making this Wald CI poor.
 ```
 
-***Discuss Wald CI***
+***Discuss: Wald CI***
 
-## See the wildness of the dflat again to compare with the MLE...
+***Discuss: How comparable is the MLE with the Posterior Mode?***

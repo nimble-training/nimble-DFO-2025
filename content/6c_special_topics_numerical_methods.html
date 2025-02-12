@@ -11,7 +11,7 @@
 
 <meta name="author" content="NIMBLE Development Team" />
 
-<meta name="date" content="2025-02-11" />
+<meta name="date" content="2025-02-12" />
 
 <title>Laplace and AGHQ</title>
 
@@ -352,7 +352,7 @@ display: none;
 
 <h1 class="title toc-ignore">Laplace and AGHQ</h1>
 <h4 class="author">NIMBLE Development Team</h4>
-<h4 class="date">2025-02-11</h4>
+<h4 class="date">2025-02-12</h4>
 
 </div>
 
@@ -362,16 +362,131 @@ h1, h4.author, h4.date {
 text-align: center;
 }
 </style>
-<div id="beta-binomial-example" class="section level2">
-<h2>Beta Binomial Example?</h2>
-<pre class="r"><code>pars &lt;- claplace$getNodeNamesVec()
+<div id="laplace-approximation" class="section level2">
+<h2>Laplace Approximation</h2>
+<p>We introduced the Laplace approximation at the beginning of the
+course. It is used as a method to marginalize over the latent states
+(continuous) in our likelihood (e.g. random effects). If we want to do
+maximimum likelihood estimation, we need to marginalize over the latent
+states before we do optimization.</p>
+<p>We see Laplace approximation used in software such as</p>
+<ul>
+<li>INLA</li>
+<li>TMB</li>
+<li>glmmTMB</li>
+<li>lme4</li>
+<li>and many more.</li>
+</ul>
+</div>
+<div id="laplace-in-nimble" class="section level2">
+<h2>Laplace in NIMBLE</h2>
+<ul>
+<li>In NIMBLE, an LA algorithm can be built using
+<strong><code>buildLaplace</code></strong> as follows:</li>
+</ul>
+<pre class="r"><code>laplace &lt;- buildLaplace(model, # model object, the only compulsory input
+                        paramNodes, # top-level stochastic nodes
+                        randomEffectsNodes, # latent variables
+                        calcNodes, # random effects and dependencies + necessary deterministic nodes
+                        calcNodesOther, # data nodes depending only on params, i.e. y*
+                        control = list() # Additional settings, e.g. inner optimiser, checking, Laplace split etc
+                        )</code></pre>
+<ul>
+<li>Compile the algorithm:</li>
+</ul>
+<pre class="r"><code>Claplace &lt;- compileNimble(laplace, project = model)</code></pre>
+<ul>
+<li>Run it:</li>
+</ul>
+<pre class="r"><code>res &lt;- runLaplace(laplace, # Laplace algorithm
+                  pStart,  # Start value for MLE
+                  method = &quot;BFGS&quot;,               # Outer optimisation method
+                  originalScale = TRUE,          # Scale of MLE results: original or transformed (unconstrained)
+                  randomEffectsStdError = TRUE,  # Return std. error of random effects?
+                  jointCovariance = FALSE        # Return joint covariance matrix of params and random effects?
+                  )</code></pre>
+</div>
+<div id="some-notes-about-nimble-laplace" class="section level2">
+<h2>Some notes about NIMBLE Laplace</h2>
+<ul>
+<li><p>Input nodes (except for model code) for Laplace, if not provided
+or only partially provided, will be decided by
+<strong><code>setupMargNodes</code></strong>; see
+<code>help(&quot;setupMargNodes&quot;)</code>.</p></li>
+<li><p>The automatic decision process should be perfect in most cases,
+but not always. For example, for state-space models the initial state
+will be treated as a parameter, not a random effect. Need to provide the
+arguments manually.</p></li>
+<li><p>One useful feature is the split of Laplace approximation (set
+<code>control = list(split = TRUE)</code> for <code>buildLaplace</code>
+or <code>split = TRUE</code> for <code>setupMargNodes</code>).</p></li>
+<li><p>For easier (better?) optimisation (both inner and outer), we
+apply automatic transformations to constrained parameter and/or random
+effects nodes; see <code>help(&quot;parameterTransform&quot;)</code>.</p></li>
+<li><p>A very recent feature is that <code>nimOptim</code> can
+incorporate additional optimisation methods (e.g. those in
+<code>nlminb</code>). For Laplace, set the inner optimiser using
+<code>control = list(innerOptimMethod = &quot;nlminb&quot;)</code> in
+<code>buildLaplace</code>.</p></li>
+</ul>
+</div>
+<div id="negative-binomial-distribution" class="section level2">
+<h2>Negative Binomial Distribution</h2>
+<p>Consider the negative binomial. This can be written as a mixture of
+Poisson observations with rate being randomly distributed according to a
+gamma distribution.</p>
+<pre class="r"><code>y &lt;- rnbinom(10000, size = 10, prob = 0.2)
+x &lt;- rgamma(10000, shape = 10, scale = (1-0.2)/0.2)
+y_x &lt;- rpois(10000, x)
+hist(y, col = &#39;blue&#39;)
+hist(y_x, add = TRUE, col=rgb(1,0,0,0.5))</code></pre>
+<p>We will write a model that uses the mixture version instead of the
+direct negative binomial to then marginalize out the value.</p>
+<pre class="r"><code>n &lt;- 100
+model_code_pg &lt;- nimbleCode({
+  # priors 
+  a ~ dunif(0, 1000)
+  b ~ dunif(0, 1000)
+  for(i in 1:n){
+  lambda[i] ~ dgamma(a, b)
+  y[i] ~ dpois(lambda[i])
+  }})
 
-claplace$updateSettings(nQuad = 1)
-loglik1 &lt;- claplace$calcLogLik(p = values(model, pars))
-claplace$updateSettings(nQuad = 3)
-loglik3 &lt;- claplace$calcLogLik(p= values(model, pars))
-claplace$updateSettings(nQuad = 11)
-loglik11 &lt;- claplace$calcLogLik(p = values(model, pars))</code></pre>
+model_pg &lt;- nimbleModel(model_code_pg, data = list(y=rpois(n, rgamma(n, 10, 2))), 
+                        constants = list(n=n), inits = list(a = 10, b = 2), buildDerivs = TRUE)
+cmodel_pg  &lt;- compileNimble(model_pg)</code></pre>
+<p>Now we will build the same model using the negative binomial directly
+instead.</p>
+<pre class="r"><code>## Marginal model is equivalent to a negative binomial with this parameterization.
+model_code_nb &lt;- nimbleCode({
+  # priors 
+  a ~ dunif(0, 1000)
+  b ~ dunif(0, 1000)
+  for(i in 1:n){
+      y[i] ~ dnbinom(size=a, prob=b/(1+b))
+  }})
+  
+model_nb &lt;- nimbleModel(model_code_nb, data = list(y=model_pg$y), 
+                        constants = list(n=n), inits = list(a = 10, b = 2))
+cmodel_nb &lt;- compileNimble(model_nb)</code></pre>
+<p>Now, in theory if we can marginalize over the random effects in the
+Poisson gamma mixture, we will get the exact same likelihood as when we
+calculate the negative binomial model. we will use Laplace to
+marginalize out the random effects (<code>lambda</code> in this
+case).</p>
+<pre class="r"><code>Rlaplacepg &lt;- buildLaplace(model_pg)
+laplacepg &lt;- compileNimble(Rlaplacepg)
+laplacepg$calcLogLik(c(10,2))
+cmodel_nb$a &lt;- 10
+cmodel_nb$b &lt;- 2
+cmodel_nb$calculate(&quot;y&quot;)</code></pre>
+<p>This is pretty close but it isn’t exact. We can actually do better
+than Laplace in NIMBLE. If we need high accuracy we can explore using
+adaptive Gauss-Hermite quadrature (AGHQ) instead.</p>
+<pre class="r"><code>laplacepg$updateSettings(nQuad = 11)
+laplacepg$calcLogLik(c(10,2))
+cmodel_nb$calculate(&quot;y&quot;)</code></pre>
+<p>Now that is pretty much exact!</p>
 </div>
 <div id="example-fraser-sockeye-again" class="section level2">
 <h2>Example Fraser Sockeye (again)</h2>
@@ -441,11 +556,11 @@ samp.sum &lt;- data.frame(do.call(&#39;cbind&#39;, summary(samples)))
 samp.sum$param &lt;- rownames(samp.sum)
 samp.sum$method &lt;- &quot;MCMC&quot;
 samp.sum$lci &lt;- samp.sum$X2.5.
-samp.sum$uci &lt;- samp.sum$X97.5.
-
-rlaplace &lt;- buildLaplace(model)
+samp.sum$uci &lt;- samp.sum$X97.5.</code></pre>
+<pre class="r"><code>rlaplace &lt;- buildLaplace(model)
 claplace &lt;- compileNimble(rlaplace)
 mle &lt;- claplace$findMLE()
+## mle.sum &lt;- summaryLaplace(claplace, mle) ## Should work depending on nimble install.
 mle.sum &lt;- claplace$summary(mle)
 mle.sum$params
 out &lt;- rbind(samp.sum[, c(&quot;param&quot;, &quot;Mean&quot;, &quot;SD&quot;, &quot;lci&quot;, &quot;uci&quot;, &quot;method&quot;)], 
@@ -463,10 +578,9 @@ plot(samples[, &quot;logE&quot;], trace = FALSE)
 abline(v = mle.logE$Mean, col = &#39;red&#39;, lty = 2)
 lines(x = c(mle.logE[, &quot;lci&quot;], mle.logE[, &quot;uci&quot;]), y = c(0.02, 0.02), col = &#39;red&#39;, cex = 2)
 ## We can see the symmetry assumption from the MLE is probably making this Wald CI poor.</code></pre>
-<p><strong><em>Discuss Wald CI</em></strong></p>
-</div>
-<div id="see-the-wildness-of-the-dflat-again-to-compare-with-the-mle" class="section level2">
-<h2>See the wildness of the dflat again to compare with the MLE…</h2>
+<p><strong><em>Discuss: Wald CI</em></strong></p>
+<p><strong><em>Discuss: How comparable is the MLE with the Posterior
+Mode?</em></strong></p>
 </div>
 
 
