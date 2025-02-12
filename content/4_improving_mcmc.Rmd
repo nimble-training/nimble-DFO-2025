@@ -36,7 +36,7 @@ do.call(knitr::opts_chunk$set, knitr_opts)
 
 ## Example Depletion Study
 
-Consider data from Scruton et al. (1998) "Pamehac Brook: A case study of the restoration of a Newfoundland, Canada, river impacted by flow diversion for pulpwood transportation". Pamehac Brook is a small tributary of the Exploits River and drains an area of 100 km2. Fixed effort electrofishing occurred in 1990, 1991, 1992, 1996, and then more recently in 2016. In general, at least 4 sweeps were carried out. The first year, 1990 was prior to restoration from logging dams that were removed that year. Eight stations were sampled, two above the former diversion, and six below. In depletion studies, it is critical that each survey, fewer and fewer fish should be caught as the area is depleted.
+Consider data from [Scruton et al. (1998)](https://doi.org/10.1002/(SICI)1099-0755(199801/02)8:1%3C145::AID-AQC257%3E3.0.CO;2-7). Pamehac Brook is a small tributary of the Exploits River and drains an area of 100 km2. Fixed effort electrofishing occurred in 1990, 1991, 1992, 1996, and then more recently in 2016. In general, at least 4 sweeps were carried out. The first year, 1990 was prior to restoration from logging dams that were removed that year. Eight stations were sampled, two above the former diversion, and six below. In depletion studies, it is critical that each survey, fewer and fewer fish should be caught as the area is depleted.
 
 
 ```{r, eval = TRUE}
@@ -71,7 +71,7 @@ A simple model for fish depletion at a single station $s$, can be written as an 
   \end{aligned}
 \]
 
-Each catch ($C_{si}$) at station $s$, the number of remaining fish are caught with probability $p_i$, that depends on some covariates ($X_s$).
+Each catch ($C_{si}$) at station $s$, is Binomial with size equal to the number of remaining fish, and probability $p_i$, depending on some covariates ($X_s$).
 
 \[
   \begin{aligned}
@@ -127,7 +127,8 @@ conf <- configureMCMC(Rmodel, monitors = c("b0", "sdre", "lambda", "N", "p"))
 Rmcmc <- buildMCMC(conf)
 Cmodel <- compileNimble(Rmodel)
 Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), samplesAsCodaMCMC = TRUE)
+samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), 
+                   samplesAsCodaMCMC = TRUE)
 plot(samples[,'sdre'])
 plot(samples[,c('b0[1]', 'b0[2]')])
 plot(samples[,c('lambda[1]', 'lambda[2]')])
@@ -135,7 +136,7 @@ plot(samples[,c('lambda[1]', 'lambda[2]')])
 
 Running 10,000 iterations for many analyses is not enough to be confident that we are fully sampling the posterior distribution. We have options to increase the number of samples, or to explore better samplers that explore posterior more effectively per iteration, although potentially at the cost of computation speed. Check out `help(samplers)` to help choose.
 
-Here is some basic posterior manipulation code. Note that packages like `tidyBayes` will take coda output and automate the processing of it.
+Here is some basic posterior manipulation code. Note that packages like `tidyBayes` will take coda mcmc objects and automate the processing of it.
 
 ```{r}
 sumdf <- data.frame(do.call("cbind", summary(samples)))
@@ -164,7 +165,7 @@ ggplot(data = datp, aes(x = Station, y = Mean, colour = Species)) +
     position = position_dodge(width = 0.25), width = 0.1) 
 ```
 
-It is likely we can assume that catchability between brook trout and Atlantic salmon is constant, but both vary between sites. Now we will explore ways to improve the mixing of the MCMC.
+It is likely we can assume that catchability between brook trout and Atlantic salmon is constant, but both vary between sites. However, we will explore ways to improve the mixing of the MCMC for this particular model.
 
 ## Some strategies for improving MCMC
 
@@ -184,7 +185,7 @@ It is likely we can assume that catchability between brook trout and Atlantic sa
  - (Advanced) Write new samplers that take advantage of particular model structures
 
 
-We will start to look at which parameters are correlated and try blocking to improve mixing. Note that blocking is a good strategy to reduce computation time as well as improve mixing. Each iteration of the MCMC requires fewer computation steps when we sample in block. For instance in this example, when we sample `b0[1]` and `lambda[1]` separately, we change first change `b0[1]`, compute the density and the accept/reject, and then change `lambda[1]`, compute the density and accept/reject. By combining these into a block, we change them both at the same time, then compute the density and accept/reject.
+A good place to start is to think about which parameters are correlated and try blocking to improve mixing. Note that blocking is a good strategy to reduce computation time as well as improve mixing. Each iteration of the MCMC requires fewer computation steps when we sample in block. For instance in this example, when we sample `b0[1]` and `lambda[1]` separately, we change first change `b0[1]`, compute the density and the accept/reject, and then change `lambda[1]`, compute the density and accept/reject. By combining these into a block, we change them both at the same time, then compute the density and accept/reject once.
 
 ***Discussion*** Would we get a speed up if we block `b0[1]` and `b0[2]`?
 
@@ -205,7 +206,8 @@ conf$addSampler(c("lambda[2]", "b0[2]"), type = "RW_block")
 Rmcmc <- buildMCMC(conf)
 Cmodel <- compileNimble(Rmodel)
 Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples.rw <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), samplesAsCodaMCMC = TRUE)
+samples.rw <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), 
+                      samplesAsCodaMCMC = TRUE)
 plot(samples.rw[,c('b0[1]', 'b0[2]')])
 plot(samples.rw[,c('lambda[1]', 'lambda[2]')])
 ```
@@ -294,7 +296,7 @@ help(HMC)
 
 We will explore our example from above but using HMC to sample it. Note that HMC uses something called "automatic differentiation" to get derivatives. Discrete nodes are not differentiable so HMC cannot be used to sample $N$. This is why you see programs like STAN require the user to marginalize over any latent nodes. 
 
-Note that NIMBLE can use HMC on just particular nodes, or across all nodes (unlike STAN). We will demonstrate that here as well. First we will just assign HMC to the continuous parameters, then we will marginalize over the $N$ nodes and sample with HMC again. Note that we will build derivs when we call `nimbleModel`.
+Note that NIMBLE can use HMC on just particular nodes, or across all nodes (unlike STAN). We will demonstrate that here as well. First we will just assign HMC to the continuous parameters, then we will marginalize over the $N$ nodes and sample with HMC again. Note that we will need to set `buildDerivs = TRUE` when we call `nimbleModel`.
 
 ```{r}
 Rmodel <- nimbleModel(model_code, data = data, constants = constants, inits = inits(), buildDerivs = TRUE)
@@ -334,7 +336,7 @@ ggplot(data = sumdf %>% filter(parameter == "N"), aes(x = Station, y = Mean, col
     aes(yintercept = Mean, colour= Species), linetype='dashed')
 ```
 
-Now to follow the similar to STAN approach we have to write a custom distribution for catch that marginalizes over $N$. Note the challenge here is that we need to write our own custom nimble function with some tricks for AD compiler. This means being explicit about integers and what we want the derivatives to be.
+Now to follow the STAN approach, we write a custom distribution for catch that marginalizes over $N$. Note the challenge here is that we need to write our own custom nimble function with some tricks for AD compiler. This means being explicit about integers and what we want the derivatives to be. There are plans in the future to make this slightly easier.
 
 The math for a marginal distribution looks like:
 

@@ -115,7 +115,7 @@ for( i in seq_along(x) )
 lines(x, exp(logf), col = "red")
 ```
 
-Key input for a `nimbleModel` is the `nimbleCode`, constants, data, and inits. Above, no constants are required, and we don't initialize anything. No data is provided and as a result, the model calculates `NA` log density until we simulate. 
+Key input for a `nimbleModel` is the `nimbleCode`, `constants`, `data`, and `inits`. Above, no constants are required, and we don't initialize anything. No data is provided and as a result, the model calculates `NA` log density until we simulate. 
 
 All of this computation is done in R. We can compile all nimble functions into C++ via `compileNimble`.
 
@@ -127,13 +127,16 @@ cmod <- compileNimble(mod)
 cmod$simulate()
 cmod$calculate()  ## Calculate all.
 cmod$getLogProb() ## Doesn't recompute, just fetches.
+
+## Get log probs as a vector:
+cmod$logProb_x[1:10]
 ```
 
 ### Constants are values needed to define model relationships
 
 - Starting or ending of index ranges, like `N` in "`for(i in 1:N)`".
 - Constant index vectors like "`group`" in "`x[i] ~ dnorm(mu[group[i]], sd = sigma)`".
-- (If you provide an index vector in the `data` list instead of the `constants` list, nimble will think its value might change, and that will make calculations very inefficient. **Constant index vectors should be provided in the `constants` list, not the data list.** )
+- (If you provide an index vector in the `data` list instead of the `constants` list, nimble will think its value might change, and that will make calculations very inefficient. **Constant index vectors should be provided in the `constants` list, not the `data` list.** )
 - Constants must be provided when creating a model with `nimbleModel` (or calling `nimbleMCMC`).
 
 ### Data represents a flag on the role a parameter (node) plays in the model
@@ -166,7 +169,7 @@ Dimensions must always be written explicitly
 
 ### Defining the MCMC
 
-The next step once we have defined a model and compile it into C++ is to build the MCMC. We first configure the MCMC. By default it will work through the stochastic nodes that aren't actually observed and assign samplers. We will then build the MCMC which builds the nimble functions required to run the MCMC based on the chosen samplers. This can then be run in R or C++. Once we run our MCMC we can access the sampled values with the mcmc object via `mvSamples`.
+The next step once we have defined a model and compiled it into C++ is to define the MCMC. We first configure the MCMC. By default it will work through the stochastic nodes that aren't actually observed and assign samplers. We will then build the MCMC which creates the nimble functions required to run the MCMC based on the chosen samplers. The MCMC can then be run in R or C++. Once we run our MCMC we can access the sampled values with the mcmc object via `mvSamples`.
 
 ```{r}
 conf <- configureMCMC(mod)
@@ -186,7 +189,7 @@ hist(samples[,'x[3]'])
 
 In the following example, we will run different versions of a linear model, learn about some nimble specific code to help us along the way, and then add some random effects, and temporal autocorrelation.
 
-We consider spawners counts of sockeye salmon the Fraser River. Recruits are estimated as the spawners plus the catch from that brood year. For sockeye, this means adding years 3-7 recruits. We will start with Early Stuart sockeye as the example but combine multiple stocks as we progress. 
+We consider spawner counts of Fraser River sockeye salmon. Recruits are estimated as the spawners plus the total catch of that brood year. For sockeye, this means adding years 3-7 recruits. We will start with Early Stuart sockeye as the example but combine multiple stocks as we progress. 
 
 ```{r, eval = TRUE}
 library(tidyverse)
@@ -218,7 +221,7 @@ ggplot(sox, aes(x = broodyear, spawners/1000)) +
 
 ```
 
-We will build a Ricker stock recruit model for these data. The parameters are $r = \mbox{log}(\alpha)$, where $\alpha$ is the maximum recruits per spawner, and $E$, the unfished equilibrium population size (carrying capicity). For brood year $i$, $S_i$ spawners generate $R_i$ recruits. Assuming combined process and observation noise $w_{i} \sim N(0,\sigma)$,
+For a Ricker stock recruit model, the parameters are $r = \mbox{log}(\alpha)$, where $\alpha$ is the maximum recruits per spawner, and $E$, the unfished equilibrium population size (carrying capacity). For brood year $i$, $S_i$ spawners generate $R_i$ recruits. Combining both any process and observation noise, $w_{i} \sim N(0,\sigma)$,
 
 \[
   R_i = S_i \mbox{exp}\Big(r \big(1-\frac{S_i}{E}\big) + w_i\Big).
@@ -230,9 +233,9 @@ We will then rewrite this as linear model, $y_i = log(R_i/S_i)$,
   y_i = r \big(1-\frac{S_i}{E}\big) + w_i.
 \]
 
-Now let's program our first NIMBLE model. Here is where you get to choose how you want to name things in your code that will be obvious to you. Decisions for the number of observations such as `n` or `nobs`. Whatever makes your code easy to read for yourself and others.
+Now let's program our first NIMBLE model. Here is where you get to choose how you want to name things in your code that will be obvious to you and others. For example, the number of observations may be `n` or `nobs`.
 
-Let's think about some prior distributions. The error term, $\sigma$, is likely relatively small given that it's error on the scale of $log(R/S)$, but it is strictly positive. Log productivity $r$, `logalpha`, is not constrained but likely not mean 1. We may expect it to be around 1.5 on the log scale, but with very high uncertainty. The challenging term here is $E$, as it is potentially very large. We may scale $R$ and $S$ in advance or just work on the large scale, but our prior must reflect that it can be very large.
+Let's think about some prior distributions. The error term, $\sigma$, is likely relatively small given that it's error on the scale of $log(R/S)$, but it is strictly positive. Log productivity $r$, `logalpha`, is not constrained but likely not mean 0. We may expect it to be around 1.5 on the log scale, but with very high uncertainty. The challenging term here is $E$, as it is potentially very large. We may scale $R$ and $S$ in advance or just work on the large scale, but our prior must reflect that it could be very large.
 
 ```{r, eval = TRUE}
 library(nimble)
@@ -252,15 +255,15 @@ sox_model_code_1 <- nimbleCode({
 
 To turn code into an object, we need to provide some combination of:
 
-- `constants` (like `N` or possibly `x`)
-- `data` (like `y` or possibly `x`)
-- `inits` (initial values for any parameters)
+- `constants` (like `nobs`)
+- `data` (like `logRS`)
+- `inits` (initial values for any parameters or states)
 
 ```{r}
 model <- nimbleModel(sox_model_code_1,
-                     constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                     constants = list(nobs = nrow(sox), S = sox$spawners/spscale),
                      data = list(logRS = sox$logRS),
-                     inits = list(sigma = 1, logalpha = 2, E = 100))
+                     inits = list(sigma = 1, logalpha = 2, E = 10))
 ```
 
 We can interact with our model and run it directly in R. First we'll need to give it some initial values. If we want the model to save the values and then update, we can use `calculate` to actually run the model and return the log posterior density.
@@ -269,19 +272,19 @@ We can interact with our model and run it directly in R. First we'll need to giv
 ## Secret example of a basic MLE in NIMBLE
 fn <- function(pars){
   model$logalpha <- pars[1]
-  model$E <- pars[2]    
+  model$E <- exp(pars[2])    
   model$sigma <- exp(pars[3])
   calcNodes <- model$getDependencies(c("sigma", "logalpha", "E"), self= FALSE)  ## Exclude priors.
   -model$calculate(calcNodes)
 }
-fit.nim <- optim(c(0,100,0), fn) ## Slow as model not compiled into C++
+fit.nim <- optim(c(1.5, 2, log(0.5)), fn) ## Slow as model not compiled into C++
 fit.nim$par 
 ```
 
 ```{r}
-fit.lm <- lm(logRS ~ I(spawners/10000), data = sox)
+fit.lm <- lm(logRS ~ I(spawners/spscale), data = sox)
 logalpha.lm <- as.numeric(coef(fit.lm)[1])
-E.lm <- as.numeric(1/abs(coef(fit.lm)[2]))
+E.lm <- as.numeric(logalpha.lm/abs(coef(fit.lm)[2]))
 sigma.lm <- sigma(fit.lm)
 
 model$logalpha <- logalpha.lm
@@ -297,7 +300,7 @@ param_nodes <- c("logalpha", "E", "sigma")
 sim_nodes <- model$getDependencies(param_nodes, self = FALSE)
 model$simulate(sim_nodes, includeData = TRUE)
 plot(model$logRS, sox$logRS, xlab = "Simulated Data", ylab = "Original Data")
-## Better reset the data:
+## ***Better reset the data***
 model$logRS <- sox$logRS
 model$calculate()
 ```
@@ -310,6 +313,7 @@ model$mean_logRS[1:3]
 model$getLogProb()
 model$getLogProb("logRS") ## Data log likelihood
 model$getLogProb("logRS[1]")  ## First observation
+model$logProb_logRS[1]
 
 model$getDependencies("sigma", self = FALSE)
 
@@ -342,26 +346,25 @@ We can now fit our first model. It will compile the model into C++, then define 
 samples <- nimbleMCMC(model = model)
 ```
 
-This is where NIMBLE "officially" stops. It's up to you to process the posterior and assess it. A common package is `coda`.
+This is where NIMBLE "officially" stops. It's up to you to process the posterior and assess it. A common package is `coda` that nimble includes in its dependencies.
 
 ```{r}
 library(coda)
 samples <- coda::mcmc(samples)
-plot(samples)
+plot(samples[, "E"])
 ```
 
-That's not looking good!
+***Discussion*** Doe `E` look like it has mixed well? What should we do? Prior distributions? Is this a problem with the model or the MCMC?
 
-***Discussion*** What should we do? Prior distributions? Is this a problem with the model or the MCMC?
 
-What can we do to improve this? Probably makes sense to put a proper prior on $E$. Maybe a good place to start is a log-normal prior on $E$ which is equivalent to a normal prior on $log(E)$. What mean and variance should we choose?
+It probably makes sense to put a proper prior on $E$. Maybe a good place to start is a log-normal prior on $E$ which is equivalent to a normal prior on $log(E)$. What mean and variance should we choose?
 
 ```{r}
 sox_model_code_2a <- nimbleCode({
   # Priors
   logalpha ~ dunif(0, 10)
   sigma ~ dunif(0,10)
-  logE ~ dnorm(5, sd = 5)
+  logE ~ dnorm(2, sd = 5)
   E <- exp(logE)
 
   # Likelihood:
@@ -371,19 +374,19 @@ sox_model_code_2a <- nimbleCode({
   }
 })
 model <- nimbleModel(sox_model_code_2a,
-                    constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                    constants = list(nobs = nrow(sox), S = sox$spawners/spscale),
                     data = list(logRS = sox$logRS),
                     inits = list(logalpha = 1.5, logE = log(100), sigma = 0.5))
   
 samples <- nimbleMCMC(model = model, nburnin = 2000, niter = 10000, 
                       samplesAsCodaMCMC = TRUE, monitors = c("E", "sigma", "logalpha"))
-plot(samples)
+plot(samples[, "E"])
 ```
 
 ***Reparameterization***
 
 \[
-  y_i = \mbox{log} - \beta S_i + w_i.
+  log(R_i/S_i) = \mbox{log}(\alpha) - \beta S_i + w_i.
 \]
 
 ```{r}
@@ -391,8 +394,9 @@ sox_model_code_2b <- nimbleCode({
   # Priors
   logalpha ~ dunif(0, 10)
   sigma ~ dunif(0,10)
-  beta ~ dunif(0,1)
-
+  beta ~ dbeta(1,3)
+  E <- logalpha/beta
+  
   # Likelihood:
   for( i in 1:nobs ){
     mean_logRS[i] <- logalpha - S[i]*beta
@@ -400,20 +404,22 @@ sox_model_code_2b <- nimbleCode({
   }
 })
 model <- nimbleModel(sox_model_code_2b,
-                    constants = list(nobs = nrow(sox), S = sox$spawners/10000),
+                    constants = list(nobs = nrow(sox), S = sox$spawners/spscale),
                     data = list(logRS = sox$logRS),
                     inits = list(logalpha = 1.5, beta = 0.0001, sigma = 0.5))
   
 samples <- nimbleMCMC(model = model, nburnin = 2000, niter = 10000, 
-                      samplesAsCodaMCMC = TRUE, monitors = c("beta", "sigma", "logalpha"))
-plot(samples)
+                      samplesAsCodaMCMC = TRUE, monitors = c("beta", "sigma", "logalpha", "E"))
+plot(samples[, "E"])
 ```
 
 Notice that high uncertainty on the $\beta$ scale near zero translates to extreme uncertainty on the $1/\beta$ scale making this behaviour similar for both even though this looks better.
 
+***Note*** The posterior samples are random draws from the posterior with some Monte Carlo error. We want to reduce that so that that error doesn't influence our results. Poor mixing increases Monte Carlo error. Multiple chains, more iterations, and other samplers reduce that error.
+
 ### Reference Points and R functions in NIMBLE:
 
-Let's adapt this model to compute reference points. Using the Ricker equation, we can calculate three key reference points relying on Lambert $W$, function to solve explicitly.
+Let's adapt this model to compute reference points. Using the Ricker equation, we can calculate three key reference points relying on Lambert $W$, function to solve explicitly [Scheuerell (2016)](https://doi.org/10.7717/peerj.1623).
 
 1. $S_{max}$ - The number of spawners that maximizes the number of recruits. This is simply $E/r$ and straightforward for this model.
 
@@ -452,9 +458,9 @@ calc_sgen <- function(smsy, smax, logalpha)
 sgen <- calc_sgen(smsy, smax, samples[,"logalpha"])
 ```
 
-We can actually use Lambert W in our nimble code by adding it to nimble via `nimbleRcall`. Control for the `nimbleRcall` will be passed to the R evaluator, which will be slower than compiled C++. See `nimbleExternalCall` to call externally compiled code directly.
+We can actually use Lambert W in our nimble code by adding it to nimble via `nimbleRcall`. Control for the `nimbleRcall` will be passed to the R evaluator, which will be slower than compiled C++. See `nimbleExternalCall` to call externally compiled code directly. In this case, the `gsl` library provides `lambert_W0` in C++ so this can be called directly.
 
-We need to let nimble know the data type of input and output to expect from the function and then nimble can interact with the R function within the nimble code itself. Even after it's compiled in C++, nimble will call R separately to execute the `nimbleRcall` function. 
+We need to let nimble know what data types of input and output to expect from the function. NIMBLE can then interact with the R function within the nimble code itself. Even after it's compiled in C++, nimble will call R separately to execute the `nimbleRcall` function. 
 
 Data types in nimble include:
 - `double()`: where double(0) is a scalar, double(1) vector, double(2) matrix, and double(n) array of dimension n.
@@ -501,7 +507,7 @@ sox_model_code_3 <- nimbleCode({
   # Priors
   logalpha ~ dunif(0, 10)
   sigma ~ dunif(0, 10)
-  logE ~ dnorm(5, sd = 5)
+  logE ~ dnorm(2, sd = 5)
   E <- exp(logE)
 
   # Likelihood:
@@ -528,7 +534,7 @@ cmodel$sgen*exp(cmodel$logalpha * (1-cmodel$sgen/cmodel$E) ) - cmodel$smsy
 
 ### NIMBLE Workflow and Defining the MCMC
 
-We have seen create model `nimbleModel` and `nimbleMCMC`. However, to understand and customize your model, it's best to actually configure and build your own MCMC. Here let's find out about what MCMC algorithms are assigned by default.
+We have seen create model `nimbleModel` and `nimbleMCMC`. However, to understand and customize your model, it's best to actually configure and build MCMC explicitly. Let's find out about what MCMC algorithms are assigned by default.
 
 ```{r}
 conf <- configureMCMC(model)
@@ -559,7 +565,7 @@ cmcmc$run(1000)
 ## sigma adaptive random walk sampler.
 cmcmc$samplerFunctions[[2]]$acceptanceHistory
 cmcmc$samplerFunctions[[2]]$scaleHistory
-plot(samples[, "sigma"])  ## See mixing is poor early in the chain.
+plot(samples[, "sigma"])
 
 ## Extract current samples from mcmc object.
 samples <- coda::mcmc(as.matrix(cmcmc$mvSamples))
@@ -574,12 +580,12 @@ inits <- function(){
 }
 samples <- runMCMC(cmcmc, niter = 5000, nburnin = 1000, 
                     inits = inits, nchains = 3, samplesAsCodaMCMC = TRUE)
-plot(samples)
+plot(samples[, "logE"])
 ```
 
-### Combining Mutliple Stocks:
+## Combining Mutliple Stocks:
 
-The Fraser sockey data that we loaded in has many different stocks associated with it. We may want to model them all together and make different assumptions about their relationships. We will start by assuming each stock is independent and fit a model with each stock having different parameters for the stock recruit relationship. We can run nearly the identical model as before but looping over each stock for the prior distributions. Because we are not always assured that the years of data match up for each stock, we will include a constant index to relate an observation to the stock. We will also assume a constant standard deviation across stocks.
+The Fraser sockeye data has many different stocks associated with it. We may want to model them all together and make different assumptions about their relationships. We will start by assuming each stock is independent and fit a model with each stock having different parameters for the stock recruit relationship. We can run nearly the identical model as before, looping over each stock to define the prior distributions. Because we are not always assured that the years of data match up for each stock, we will include a constant index to relate an observation to the stock. We will also assume a constant standard deviation across stocks.
 
 ```{r, eval = TRUE}
 sox_multi <- sockeye %>% 
@@ -616,7 +622,7 @@ sox_model_code_multi <- nimbleCode({
 
   for( i in 1:nstock ){
     logalpha[i] ~ dunif(0, 10)
-    logE[i] ~ dnorm(5, sd = 10)
+    logE[i] ~ dnorm(2, sd = 5)
     E[i] <- exp(logE[i])
   }
   for( i in 1:nobs ){
@@ -628,7 +634,7 @@ sox_model_code_multi <- nimbleCode({
 constants <- list(
   nobs = nrow(sox_multi),
   nstock = length(unique(sox_multi$stock)),
-  S = sox_multi$spawners/10000,
+  S = sox_multi$spawners_scaled,
   stock = as.integer(factor(sox_multi$stock))
 )
 inits <- function(){
@@ -692,8 +698,8 @@ $$
 sox_model_code_multiH <- nimbleCode({
 
   sigma ~ dunif(0, 10)
-  logE0 ~ dnorm(5, sd=10)
-  loga0 ~ dnorm(1.5, sd=10)
+  logE0 ~ dnorm(3, sd=5)
+  loga0 ~ dnorm(1.5, sd=5)
   sigma_a ~ dunif(0, 10)
   sigma_e ~ dunif(0, 10)
   
@@ -771,9 +777,9 @@ sum.out %>% filter(param %in% c("loga0", "logE0"))
 
 Does that seem like a good idea? Do we think that carrying capacity between these stocks should be similar? Should productivity between the stocks be similar?
 
-### Adding Temporal Correlation
+## Adding Temporal Correlation
 
-It is common to place in stock recruit modelling to model the correlation between years for spawners. The number of recruits per spawner in one year is likely to be similar to the recruits per spawner in the following year due to related climate conditions that are shared. One way to do that is by placing a random walk on the white noise term, called a moving average. When we only consider the previous year it results in a MA(1) process. In this case, the error term $w_t$, depends on the previous error term $w_{t-1}$, with a relationship $\rho$.
+It is common in stock recruit modelling to model the correlation between years for spawners. The number of recruits per spawner in one year is likely to be similar to the recruits per spawner in the following year due to related climate conditions that are shared. One way to do that is by placing a random walk on the white noise term, called a moving average. When we only consider the previous year it results in a MA(1) process. In this case, the error term $w_t$, depends on the previous error term $w_{t-1}$, with a relationship $\rho$.
 
 \[
   \mbox{log}(R_t/S_t) = r \big(1-\frac{S_i}{E}\big) + \rho w_{t-1} + w_t.
@@ -785,7 +791,7 @@ Where
   w_t \sim N(0, \sigma).
 \]
 
-As a result, the distribution of $\mbox{log}(R_t/S_t)$ is more complicated as the sum of two normally distributed random variables.
+As a result, the distribution of $\mbox{log}(R_t/S_t)$ is more complicated, defined as the sum of two normally distributed random variables.
 
 \[
   \mbox{log}(R_t/S_t) \sim N\Big(r \big(1-\frac{S_i}{E}\big) + \rho w_{t-1}, \sigma\sqrt{1-\rho^2}\Big).
@@ -803,7 +809,7 @@ Let's write this model in nimble now. Note that for convenience we are going to 
 sox <- sox %>% arrange(broodyear)
 deltat <- sox$broodyear - lag(sox$broodyear)
   
-sox_model_AR1 <- nimbleCode({
+sox_model_MA1 <- nimbleCode({
   # Priors
   logalpha ~ dnorm(1.5, sd = 10)
   sigma ~ dunif(0, 10)
@@ -822,7 +828,7 @@ sox_model_AR1 <- nimbleCode({
   }
 })
 
-model <- nimbleModel(sox_model_AR1,
+model <- nimbleModel(sox_model_MA1,
                     constants = list(nobs = nrow(sox), S = sox$spawners/spscale, deltat = deltat),
                     data = list(logRS = sox$logRS),
                     inits = list(logalpha = 1.5, delta = 0.25, logE = 2, sigma = 0.5, rho = 0))
@@ -844,14 +850,14 @@ What does $\rho$ mean here? If it's about $-0.2$, then if the previous recruit/s
 
 Later in this course we will explore other model options to account for autocorrelation such as the Gaussian conditional autoregressive model (CAR) `dcar_normal`. See https://r-nimble.org/html_manual/cha-spatial.html#intrinsic-gaussian-car-model-dcar_normal if you are excited about it.
 
-### Adding a Mixture Model
+## Adding a Mixture Model
 
 It seems like there are sometimes really bad years, and sometimes really good years for this population. Let's pretend there is some difference in productivity on the log scale, $\mbox{log}(a_0)$ and $\mbox{log}(a_0) + \delta$, that randomly occur each year, with probability $p$, so that
 
 $$
   z_t \sim \mbox{Bernoulli}(p).
 $$
-As a result, we have a time varying productivity model written as $\mbox{log}(\alpha_t) = \mbox{log}(a_0)+ z_t \delta$. This is a now mixture model.
+This results in a time varying productivity model written as $\mbox{log}(\alpha_t) = \mbox{log}(a_0)+ z_t \delta$, also known as a now mixture model.
 
 ```{r}
 sox_model_mix <- nimbleCode({
@@ -903,7 +909,7 @@ plot(1:nrow(sox), out.sum[[1]][idx,"Mean"], type = "l",
   ylab = "Posterior Mean log alpha", xlab = "brood year")
 ```
 
-Why does this output look terrible? In Bayesian mixture modelling, we have something called label switching. In this example when $\delta = 1$ or $\delta = -1$, that results in the exact same likelihood as $\alpha_0$ gets bigger or smaller. This is due to the category having no meaning. An easy solution is to give a category meaning. Such as the first one is small and the second one is big.
+Why does this output look terrible? In Bayesian mixture modelling, we have something called label switching. In this example when $\delta = 1$ or $\delta = -1$, that results in the exact same likelihood as $\alpha_0$ gets bigger or smaller. This is due to the category index having no meaning. An easy solution is to give a category meaning. Such as the first one is small and the second one is big.
 
 ```{r}
 sox_model_mix_labels <- nimbleCode({

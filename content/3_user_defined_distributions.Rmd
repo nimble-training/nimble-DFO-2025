@@ -56,7 +56,7 @@ do.call(knitr::opts_chunk$set, knitr_opts)
   f(\mbox{log}(R_t/S_t)) = p f(\mbox{log}(R_t/S_t)|z_t = 0) + (1-p) f(\mbox{log}(R_t/S_t)|z_t=1).
 \]
 
-* This then reduces the latent nodes that need to be sampled by the length of the data.
+* This then reduces the number of latent nodes that need to be sampled by the length of the data.
 
 ## NIMBLE Functions
 
@@ -98,7 +98,7 @@ Cnimsum <- compileNimble(Rnimsum)
 Cnimsum(x)
 ```
 
-Now let's make a function that takes some setup. Note that when we call this function with setup we need to call `run` directly when using the function. Note for convenience we will create a `nimbleList` output of our summary to make things look nicer.
+Let's make a function that takes some setup. Note that when we call this function with setup we need to call `run` directly when using it. Note for convenience we will create a `nimbleList` output of our summary to make things look nicer.
 
 ```{r}
 sumNimList <- nimbleList(mean = double(), sd = double())
@@ -123,7 +123,7 @@ Cfunc$run(x)
 
 ## Marginal Mixture Example:
 
-Let's use a simple mixture model example. We will observe normally distributed data, with mean and standard deviation that comes from two, unobserved groups.
+Use a simple mixture model example. We observe normally distributed data, with mean and standard deviation that comes from two, unobserved groups.
 
 ```{r}
 z <- rcat(100, c(0.35, 0.65))
@@ -161,14 +161,14 @@ samples.mix <- runMCMC(Cmcmc, niter=15000, nchains=3,
 plot(samples.mix)
 ```
 
-Now we will write out own distribution function to marginalize over $z$.
+Now we will write out own distribution function to marginalize over $z$. Note that we have to include `log = logical(0, default = FALSE)` because this is a distribution that may be called on the log or real scale.
 
 ```{r}
 dnorm_mix <- nimbleFunction(
   run = function(x = double(), mean = double(1), sd = double(1), 
                  p = double(1),  log = logical(0, default = FALSE)) {
     
-    ans <- p[1]*dnorm(x, mean[i], sd[i], log = FALSE) + p[2]*dnorm(x, mean[i], sd[i], log = FALSE)
+    ans <- p[1]*dnorm(x, mean[1], sd[1], log = FALSE) + p[2]*dnorm(x, mean[2], sd[2], log = FALSE)
     
     returnType(double())
     if(log)
@@ -185,14 +185,14 @@ modelcode <- nimbleCode({
     mu[i] ~ dnorm(0, sd = 5)
     sigma[i] ~ dunif(0,20)
   }  
-  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+  ## one ~ dconstraint(mu[1] < mu[2])  ## Is label switching still a problem
 
   for(i in 1:100){
     y[i] ~ dnorm_mix(mu[1:2], sd = sigma[1:2], p = p[1:2])
   }
 })
 
-Rmodel <- nimbleModel(modelcode, data = list(y=y, one=1), 
+Rmodel <- nimbleModel(modelcode, data = list(y=y), 
   inits = list(p = c(0.5,0.5), mu = c(-5,5), sigma = c(2,2)))
 
 conf <- configureMCMC(Rmodel, monitors = c("p", "mu", "sigma"))
@@ -337,11 +337,11 @@ samples.hmm <- runMCMC(Cmcmc, niter=15000, nchains=3,
 summary(samples.hmm)
 ```
 
-Note that a HMM just like above is what Tang et al. (2021) "Identification of recruitment regime shifts with a hidden Markov stock-recruitment model" used to identify regime shifts in productivity for Atlantic cod. See this paper for a specific fisheries example. Also, the upcoming DFO paper by Wor et al. (2025) "Recommendations for Estimating and Detecting Time-Varying Spawner-Recruit Dynamics in Fish Populations".
+Note that a HMM, just like above, is what [Tang et al. (2021)](https://doi.org/10.1093/icesjms/fsab141) used to identify regime shifts in productivity for Atlantic cod. See this paper for a specific fisheries example. Also, the upcoming DFO paper by [Wor et al. (2025)](https://dx.doi.org/10.2139/ssrn.5076364).
 
-Now we will marginalize over the latent states, just like the mixture model. For context, the algorithm we are going to code is called a 'forward algorithm' (https://en.wikipedia.org/wiki/Forward_algorithm). The idea is that we want to efficiently sum over all possible states and paths using essentially linear algebra.
+Now we will marginalize over the latent states, just like the mixture model. For context, the algorithm we are going to code is called a 'forward algorithm' (https://en.wikipedia.org/wiki/Forward_algorithm). The idea is that we want to efficiently sum over all possible states and transition paths using linear algebra.
 
-Below, for each observation, we figure out the probability of currently being in a state, multiply that by the probability of transitioning to a new state and then compute the density of the observation in that state. We sum so that we again accumulate the probability of being in each state given the data and solve in a forward way through all observations.
+Below, for each observation, we figure out the probability of currently being in a state, multiply that by the probability of transitioning to a new state and then compute the density of the observation in that state. We sum so that we accumulate the probability of being in each state given the data and solve in a forward way through all observations. We will assume that it is 50/50 in state 1 or 2 to begin.
 
 
 ```{r}
@@ -379,7 +379,7 @@ model_code_marg <- nimbleCode({
   p[2,2] ~ dbeta(1,1)
   p[2,1] <- 1-p[2,2]
 
-  one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
+  ## one ~ dconstraint(mu[1] < mu[2])  ## Label Switching.
 
   y[1:nobs] ~ dhmm_marg(p = p[1:2,1:2], mean = mu[1:2], sd = sigma[1:2])
 })

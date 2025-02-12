@@ -98,7 +98,7 @@ When choosing how to manipulate the posterior samples, it is important to consid
 For example, if we estimate $\alpha$ on the log scale, and then transform that mean, denoted by $\widehat{\cdot}$, this is not actually the mean on the real scale.
 
 \[
-  \widehat{\alpha} = \mbox{exp}(\widehat{\mbox{log}(\alpha)}).
+  \widehat{\alpha} \neq \mbox{exp}(\widehat{\mbox{log}(\alpha)}).
 \]
 
 If we want simple unbiased estimates on any scale, we need to transform the MCMC chain itself, and then calculate the new estimator. This is because, by transforming the actual simulations we are creating the posterior distribution of the new variable of interest. As a result, the mean and variance from that new posterior distribution are correct. However, note that quantiles (e.g., the median) are not impacted by transformations.
@@ -112,12 +112,12 @@ post.alpha <- exp(post.logalpha)
 mean(post.alpha)
 ```
 
-In a Frequentist setting for log-normal data in stock assessment you'll often see what they call a "bias correction" term ($-\sigma/2$) added to the equation to make the estimated mean be correct on the real scale. For a good discussion on marginal means see Gory et al. (2020) "A class of generalized linear mixed models adjusted for marginal interpretability".
+In a Frequentist setting for log-normal data in stock assessment you'll often see what they call a "bias correction" term ($-\sigma/2$) added to the equation to make the estimated mean be correct on the real scale. For a good discussion on marginal means see [Gory et al. (2020)](https://doi.org/10.1002/sim.8782).
 
 Let's see the difference for our reference points. Does the mean/median/mode make more sense for setting reference points? What is the interpretation of each?
 
 ```{r}
-## Bring in that nimble R call function again.
+## Bring in that nimble R call function again if we want to add this to the model code.
 Rlamw <- function(x){
   if(!is.na(x)) ## NA dealt with to make life easy if model isn't initialized.
     return(gsl::lambert_W0(x))
@@ -129,29 +129,29 @@ nimLamW <- nimbleRcall(prototype = function(x = double()){}, Rfun = 'Rlamw',
 
 smax <- exp(out[,"logE"])/out[,"logalpha"]
 
-hist(smax[smax < 10]) ## Some extreme values to remove.
+plot(density(smax[smax < 10]), main = "", xlab = expression(S[max]~scaled)) ## Some extreme values to remove.
 abline(v = mean(smax[smax < 10]), col = 'red')
 abline(v = median(smax[smax < 10]), col = 'blue')
 abline(v = MCMCglmm::posterior.mode(coda::mcmc(smax[smax < 10])), col = 'red', lty = "dashed")
 
 smsy <- (1-gsl::lambert_W0(exp(1-out[,"logalpha"])))*smax
 
-plot(density(smsy[smax < 10])) ## Some extreme values to remove.
+plot(density(smsy[smax < 10]), main = "", xlab = expression(S[msy]~scaled)) ## Some extreme values to remove.
 abline(v = mean(smsy[smax < 10]), col = 'red')
 abline(v = median(smsy[smax < 10]), col = 'blue')
 abline(v = MCMCglmm::posterior.mode(coda::mcmc(smsy[smax < 10])), col = 'red', lty = "dashed")
 
 sgen <- -gsl::lambert_W0(-smsy/(exp(out[,"logalpha"])*smax))*smax
 
-plot(density(sgen[smax < 10])) ## Some extreme values to remove.
+plot(density(sgen[smax < 10]), main = "", xlab = expression(S[gen]~scaled)) ## Some extreme values to remove.
 abline(v = mean(sgen[smax < 10]), col = 'red')
 abline(v = median(sgen[smax < 10]), col = 'blue')
-abline(v = MCMCglmm::posterior.mode(coda::mcmc(sgen[smax < 10])), col = 'red', lty = "dashed")\
+abline(v = MCMCglmm::posterior.mode(coda::mcmc(sgen[smax < 10])), col = 'red', lty = "dashed")
 ```
 
 ## Posterior Predictive Check
 
-A challenge with bespoke Bayesian models is that it can be harder to do model checking. Luckily, the R packages `DHARMa` combined with nimble's posterior prediction capability makes this relatively easy.
+A challenge with bespoke Bayesian models is that it can be harder to do model checking. Luckily, the R package `DHARMa` combined with nimble's posterior prediction capability makes this relatively easy.
 
 We will start by writing a completely flexible posterior prediction nimble function. Input will be the model, and the MCMC object.
 

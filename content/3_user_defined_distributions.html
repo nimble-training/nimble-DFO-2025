@@ -11,7 +11,7 @@
 
 <meta name="author" content="NIMBLE Development Team" />
 
-<meta name="date" content="2025-02-04" />
+<meta name="date" content="2025-02-11" />
 
 <title>User Defined Distributions</title>
 
@@ -352,7 +352,7 @@ display: none;
 
 <h1 class="title toc-ignore">User Defined Distributions</h1>
 <h4 class="author">NIMBLE Development Team</h4>
-<h4 class="date">2025-02-04</h4>
+<h4 class="date">2025-02-11</h4>
 
 </div>
 
@@ -392,8 +392,8 @@ observation easily instead of sampling the group.</li>
 f(\mbox{log}(R_t/S_t)|z_t=1).
 \]</span></p>
 <ul>
-<li>This then reduces the latent nodes that need to be sampled by the
-length of the data.</li>
+<li>This then reduces the number of latent nodes that need to be sampled
+by the length of the data.</li>
 </ul>
 </div>
 <div id="nimble-functions" class="section level2">
@@ -435,11 +435,10 @@ x &lt;- rnorm(10000, 2.5, 3)
 Rnimsum(x)
 Cnimsum &lt;- compileNimble(Rnimsum)
 Cnimsum(x)</code></pre>
-<p>Now let’s make a function that takes some setup. Note that when we
-call this function with setup we need to call <code>run</code> directly
-when using the function. Note for convenience we will create a
-<code>nimbleList</code> output of our summary to make things look
-nicer.</p>
+<p>Let’s make a function that takes some setup. Note that when we call
+this function with setup we need to call <code>run</code> directly when
+using it. Note for convenience we will create a <code>nimbleList</code>
+output of our summary to make things look nicer.</p>
 <pre class="r"><code>sumNimList &lt;- nimbleList(mean = double(), sd = double())
 
 Rnimsum &lt;- nimbleFunction(
@@ -461,9 +460,9 @@ Cfunc$run(x)</code></pre>
 </div>
 <div id="marginal-mixture-example" class="section level2">
 <h2>Marginal Mixture Example:</h2>
-<p>Let’s use a simple mixture model example. We will observe normally
-distributed data, with mean and standard deviation that comes from two,
-unobserved groups.</p>
+<p>Use a simple mixture model example. We observe normally distributed
+data, with mean and standard deviation that comes from two, unobserved
+groups.</p>
 <pre class="r"><code>z &lt;- rcat(100, c(0.35, 0.65))
 mu &lt;- c(-10, 5)
 sd &lt;- c(5, 0.5)
@@ -490,6 +489,7 @@ Rmodel &lt;- nimbleModel(modelcode, data = list(y=y, one=1),
 
 conf &lt;- configureMCMC(Rmodel, monitors = c(&quot;p&quot;, &quot;mu&quot;, &quot;sigma&quot;))
 samplers &lt;- conf$getSamplers()
+Rmcmc &lt;- buildMCMC(conf)
 length(samplers)  ## 105 samplers
 Cmodel &lt;- compileNimble(Rmodel)
 Cmcmc &lt;- compileNimble(Rmcmc, project=Rmodel)
@@ -497,12 +497,14 @@ samples.mix &lt;- runMCMC(Cmcmc, niter=15000, nchains=3,
                        nburnin = 5000, samplesAsCodaMCMC = TRUE)
 plot(samples.mix)</code></pre>
 <p>Now we will write out own distribution function to marginalize over
-<span class="math inline">\(z\)</span>.</p>
+<span class="math inline">\(z\)</span>. Note that we have to include
+<code>log = logical(0, default = FALSE)</code> because this is a
+distribution that may be called on the log or real scale.</p>
 <pre class="r"><code>dnorm_mix &lt;- nimbleFunction(
   run = function(x = double(), mean = double(1), sd = double(1), 
                  p = double(1),  log = logical(0, default = FALSE)) {
     
-    ans &lt;- p[1]*dnorm(x, mean[i], sd[i], log = FALSE) + p[2]*dnorm(x, mean[i], sd[i], log = FALSE)
+    ans &lt;- p[1]*dnorm(x, mean[1], sd[1], log = FALSE) + p[2]*dnorm(x, mean[2], sd[2], log = FALSE)
     
     returnType(double())
     if(log)
@@ -519,14 +521,14 @@ modelcode &lt;- nimbleCode({
     mu[i] ~ dnorm(0, sd = 5)
     sigma[i] ~ dunif(0,20)
   }  
-  one ~ dconstraint(mu[1] &lt; mu[2])  ## Label Switching.
+  ## one ~ dconstraint(mu[1] &lt; mu[2])  ## Is label switching still a problem
 
   for(i in 1:100){
     y[i] ~ dnorm_mix(mu[1:2], sd = sigma[1:2], p = p[1:2])
   }
 })
 
-Rmodel &lt;- nimbleModel(modelcode, data = list(y=y, one=1), 
+Rmodel &lt;- nimbleModel(modelcode, data = list(y=y), 
   inits = list(p = c(0.5,0.5), mu = c(-5,5), sigma = c(2,2)))
 
 conf &lt;- configureMCMC(Rmodel, monitors = c(&quot;p&quot;, &quot;mu&quot;, &quot;sigma&quot;))
@@ -658,24 +660,23 @@ Cmcmc &lt;- compileNimble(Rmcmc, project=Rmodel)
 samples.hmm &lt;- runMCMC(Cmcmc, niter=15000, nchains=3, 
                        nburnin = 5000, samplesAsCodaMCMC = TRUE)
 summary(samples.hmm)</code></pre>
-<p>Note that a HMM just like above is what Tang et al. (2021)
-“Identification of recruitment regime shifts with a hidden Markov
-stock-recruitment model” used to identify regime shifts in productivity
-for Atlantic cod. See this paper for a specific fisheries example. Also,
-the upcoming DFO paper by Wor et al. (2025) “Recommendations for
-Estimating and Detecting Time-Varying Spawner-Recruit Dynamics in Fish
-Populations”.</p>
+<p>Note that a HMM, just like above, is what <a href="https://doi.org/10.1093/icesjms/fsab141">Tang et al. (2021)</a>
+used to identify regime shifts in productivity for Atlantic cod. See
+this paper for a specific fisheries example. Also, the upcoming DFO
+paper by <a href="https://dx.doi.org/10.2139/ssrn.5076364">Wor et
+al. (2025)</a>.</p>
 <p>Now we will marginalize over the latent states, just like the mixture
 model. For context, the algorithm we are going to code is called a
 ‘forward algorithm’ (<a href="https://en.wikipedia.org/wiki/Forward_algorithm" class="uri">https://en.wikipedia.org/wiki/Forward_algorithm</a>). The
 idea is that we want to efficiently sum over all possible states and
-paths using essentially linear algebra.</p>
+transition paths using linear algebra.</p>
 <p>Below, for each observation, we figure out the probability of
 currently being in a state, multiply that by the probability of
 transitioning to a new state and then compute the density of the
-observation in that state. We sum so that we again accumulate the
-probability of being in each state given the data and solve in a forward
-way through all observations.</p>
+observation in that state. We sum so that we accumulate the probability
+of being in each state given the data and solve in a forward way through
+all observations. We will assume that it is 50/50 in state 1 or 2 to
+begin.</p>
 <pre class="r"><code>##*** NOTE HERE I AM HARD CODING IN THE INITIAL STATE! This is not a general algorithm.
 dhmm_marg &lt;- nimbleFunction(
   run = function(x = double(1), p = double(2), mean = double(1), sd = double(1), log = logical(0, default = &quot;FALSE&quot;)){
@@ -710,7 +711,7 @@ model_code_marg &lt;- nimbleCode({
   p[2,2] ~ dbeta(1,1)
   p[2,1] &lt;- 1-p[2,2]
 
-  one ~ dconstraint(mu[1] &lt; mu[2])  ## Label Switching.
+  ## one ~ dconstraint(mu[1] &lt; mu[2])  ## Label Switching.
 
   y[1:nobs] ~ dhmm_marg(p = p[1:2,1:2], mean = mu[1:2], sd = sigma[1:2])
 })

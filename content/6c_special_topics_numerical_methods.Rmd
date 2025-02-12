@@ -1,5 +1,5 @@
 ---
-title: "Improving MCMC"
+title: "Laplace and AGHQ"
 author: "NIMBLE Development Team"
 date: "`r Sys.Date()`"
 output: html_document
@@ -34,409 +34,116 @@ knitr_opts <- list(
 do.call(knitr::opts_chunk$set, knitr_opts)
 ```
 
-## Example Depletion Study
+## Beta Binomial Example?
 
-Consider data from Scruton et al. (1998) "Pamehac Brook: A case study of the restoration of a Newfoundland, Canada, river impacted by flow diversion for pulpwood transportation". Pamehac Brook is a small tributary of the Exploits River and drains an area of 100 km2. Fixed effort electrofishing occurred in 1990, 1991, 1992, 1996, and then more recently in 2016. In general, at least 4 sweeps were carried out. The first year, 1990 was prior to restoration from logging dams that were removed that year. Eight stations were sampled, two above the former diversion, and six below. In depletion studies, it is critical that each survey, fewer and fewer fish should be caught as the area is depleted.
+```{r}
+pars <- claplace$getNodeNamesVec()
 
+claplace$updateSettings(nQuad = 1)
+loglik1 <- claplace$calcLogLik(p = values(model, pars))
+claplace$updateSettings(nQuad = 3)
+loglik3 <- claplace$calcLogLik(p= values(model, pars))
+claplace$updateSettings(nQuad = 11)
+loglik11 <- claplace$calcLogLik(p = values(model, pars))
+```
+
+
+## Example Fraser Sockeye (again)
+
+See module 2, "intro_to_nimble" for information on this example. We will consider the hierarchical model 
 
 ```{r, eval = TRUE}
 library(tidyverse)
-remdf <- read.csv("data/removal_data.csv")
-catch <- remdf %>% 
-  pivot_wider(id_cols = c(Site, Station, Year, Sweep), names_from = Species, 
-              values_from = Fish.ID, values_fn = ~ length(.x), values_fill = 0) %>%
-              pivot_longer(unique(remdf$Species), names_to = "Species", values_to = "Catch")
+library(readxl)
+sockeye <- read_excel("data/Production Data_Detailed Format.xlsx")
+stockid <- "Stellako"
+sox <- sockeye %>% 
+  filter(production_stock_name == stockid) %>%
+  group_by(broodyr, total_broodyr_spawners) %>%
+  summarize(recruits=sum(num_recruits), .groups = "drop") %>%
+  rename(broodyear = broodyr, spawners = total_broodyr_spawners) %>%
+  mutate(logRS = log(recruits) - log(spawners)) %>%
+  filter(!is.na(spawners) & !is.na(recruits)) %>%
+  mutate(scale = 10^floor(log10(max(spawners))))
 
-catch <- catch %>% group_by(Site, Station, Year, Species) %>%
-  arrange(Sweep) %>%
-  mutate(nCatch = cumsum(Catch)-Catch) %>%
-  ungroup() %>%
-  mutate(Station = as.numeric(Station))
-
-ggplot(data = catch %>% filter(Year == 1992, Species %in% c("AS", "BT")), 
-    aes(x = Sweep, y = Catch, colour = factor(Station), shape = Species)) +
-  geom_point() + 
-  geom_line() +
-  theme_bw() +
-  ylab("Catch") + xlab("Sweep") +
-  ggtitle("1992 Electrofishing Survey")
+spscale <- sox$scale[1]
 ```
 
-A simple model for fish depletion at a single station $s$, can be written as an unknown fish population $N_s$, being depleted $n$ times. We can assume that the population is Poisson distributed with a mean $\lambda$ that is gamma distributed. This is called a Poisson-Gamma mixture, and is exactly a negative binomial for a single station. We will assume that each station, $s$, is a random draw from the same mean ($\lambda$).
-
-\[
-  \begin{aligned}
-    N_s & \sim \mbox{Poisson}(\lambda)\\
-    \lambda & \sim \mbox{gamma}(0.1, 0.1)
-  \end{aligned}
-\]
-
-Each catch ($C_{si}$) at station $s$, the number of remaining fish are caught with probability $p_i$, that depends on some covariates ($X_s$).
-
-\[
-  \begin{aligned}
-    C_{si} & \sim \mbox{Binomial}(N_s - \sum_{k<i} C_{sk}, p_i)\\
-    \mbox{logit}(p_i) & = \sum \beta_k x_{sik}
-  \end{aligned}
-\]
-
-For this particular example, we will assume that Atlantic salmon and Brook trout share some information about catchability at each station using a random effect and a term for species specific detectability.
+We will use the code chunk below from the previous module to get started.
 
 ```{r}
 library(nimble)
-model_code <- nimbleCode({
-
-  b0[1] ~ dnorm(0, sd = 3)
-  b0[2] ~ dnorm(0, sd = 3)
-  sdre ~ dunif(0, 10)
-    
-  lambda[1] ~ dgamma(0.1,0.1)
-  lambda[2] ~ dgamma(0.1,0.1)
-
-  for( s in 1:nstation ){
-    re[s] ~ dnorm(0, sd = sdre) # non-centered parameterization
-    N[s,1] ~ dpois(lambda[1])
-    N[s,2] ~ dpois(lambda[2])
-  }
+sox <- sox %>% arrange(broodyear)
+deltat <- sox$broodyear - lag(sox$broodyear)
   
-  for( i in 1:nobs ){
-    logit(p[i]) <- b0[spp[i]] + re[station[i]]
-    caught[i] ~ dbinom(size = N[station[i], spp[i]] - total[i], prob = p[i])
+sox_model_MA1 <- nimbleCode({
+  # Priors
+  logalpha ~ dnorm(1.5, sd = 10)
+  sigma ~ dunif(0, 10)
+  logE ~ dnorm(2, sd = 3)
+  E <- exp(logE)
+  rho ~ T(dnorm(0,1), -1, 1)  ## Correlation term. Truncated.
+  
+  ## Compute mean
+  mean_logRS[1:nobs] <- logalpha*(1-S[1:nobs]/E)  ## Vector notation.
+
+  # Likelihood:
+  logRS[1] ~ dnorm(mean_logRS[1], sd = sigma)
+  for( i in 2:nobs ){
+    mean_logRS_t[i] <- mean_logRS[i] + (mean_logRS[i-1] - logRS[i-1])*rho^deltat[i]
+    logRS[i] ~ dnorm(mean_logRS_t[i], sd = sigma*sqrt(1-rho^(2*deltat[i])))
   }
 })
 
-dat92 <- catch %>% filter(Year == 1992, Species %in% c("AS", "BT"))
-data <- list(caught = dat92$Catch)
-constants <- list(nobs = nrow(dat92), total = dat92$nCatch, 
-                  nstation = length(unique(dat92$Station)), 
-                  station = dat92$Station, spp = as.numeric(factor(dat92$Species)))
+model <- nimbleModel(sox_model_MA1,
+                    constants = list(nobs = nrow(sox), S = sox$spawners/spscale, deltat = deltat),
+                    data = list(logRS = sox$logRS),
+                    inits = list(logalpha = 1.5, delta = 0.25, logE = 2, sigma = 0.5, rho = 0), 
+                    buildDerivs = TRUE)
+cmodel <- compileNimble(model)
 
-maxn <- dat92 %>% 
-  group_by(Station, Species) %>% 
-  summarize(n = sum(Catch), .groups = "drop") %>%
-  pivot_wider(names_from = Species, values_from = n)
+conf <- configureMCMC(model, monitors = c("logE", "sigma", "rho", "logalpha"))
+mcmc <- buildMCMC(conf)
+## Compile the MCMC
+cmcmc <- compileNimble(mcmc)
 
 inits <- function(){
-  list(N = as.matrix(maxn[,c("AS", "BT")] + 10, ncol = 2), 
-       lambda = c(mean(maxn$AS+10), mean(maxn$BT+10)), b0 = rnorm(2,0,1), 
-       re = rnorm(constants$nstation, 0, 1), sdre = runif(1,0.5,2))
-}
-Rmodel <- nimbleModel(model_code, data = data, constants = constants, inits = inits())
-
-conf <- configureMCMC(Rmodel, monitors = c("b0", "sdre", "lambda", "N", "p"))
-Rmcmc <- buildMCMC(conf)
-Cmodel <- compileNimble(Rmodel)
-Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), samplesAsCodaMCMC = TRUE)
-plot(samples[,'sdre'])
-plot(samples[,c('b0[1]', 'b0[2]')])
-plot(samples[,c('lambda[1]', 'lambda[2]')])
-```
-
-Running 10,000 iterations for many analyses is not enough to be confident that we are fully sampling the posterior distribution. We have options to increase the number of samples, or to explore better samplers that explore posterior more effectively per iteration, although potentially at the cost of computation speed. Check out `help(samplers)` to help choose.
-
-Here is some basic posterior manipulation code. Note that packages like `tidyBayes` will take coda output and automate the processing of it.
-
-```{r}
-sumdf <- data.frame(do.call("cbind", summary(samples)))
-sumdf$parameter = gsub("\\[.*", "", rownames(sumdf))
-sumdf$idx = gsub("*.\\[|\\]", "", rownames(sumdf))
-sumdf$Station = factor(gsub(",.*", "", sumdf$idx))
-sumdf$Species = c("AS", "BT")[as.numeric(gsub("*.,", "", sumdf$idx))]
-sumdf <- sumdf %>% 
-  mutate(Species = ifelse(idx == "lambd1", "AS", Species)) %>%
-  mutate(Species = ifelse(idx == "lambd2", "BT", Species))
-
-ggplot(data = sumdf %>% filter(parameter == "N"), aes(x = Station, y = Mean, colour = Species)) +
-  geom_point(position = position_dodge(width = 0.25)) + 
-  theme_bw() + ylab("Posterior Mean Abundance") +
-  geom_errorbar(aes(ymin = X2.5., ymax = X97.5., colour = Species), 
-    position = position_dodge(width = 0.25), width = 0.1) +
-  geom_hline(data = sumdf %>% filter(parameter == "lambda"), 
-    aes(yintercept = Mean, colour= Species), linetype='dashed')
-
-pout <- sumdf %>% filter(parameter == "p")
-datp <- cbind(dat92, pout[, 1:10])
-ggplot(data = datp, aes(x = Station, y = Mean, colour = Species)) +
-  geom_point(position = position_dodge(width = 0.25)) + 
-  theme_bw() + ylab("Posterior Mean Detection Probability")
-  geom_errorbar(aes(ymin = X2.5., ymax = X97.5., colour = Species), 
-    position = position_dodge(width = 0.25), width = 0.1) 
-```
-
-It is likely we can assume that catchability between brook trout and Atlantic salmon is constant, but both vary between sites. Now we will explore ways to improve the mixing of the MCMC.
-
-## Some strategies for improving MCMC
-
- - Customize sampler choices. E.g.,
-    - Try sampling standard deviations on a log scale
-    - Try slice samplers instead of Metropolis-Hastings
-    - Try blocking correlated parameters
-    - Try multiple samplers for slow-mixing parameters [not shown].
- - Reparameterize
-    - Center covariates
-    - Centered versus non-centered random effects parameterization
-    - Rotated coordinates to reduce posterior correlation
- - Rewrite the model. E.g.,
-    - Rewrite the model to reduce dependencies
-    - Vectorize declarations to improve computational efficiency
-    - Marginalize to remove parameters
- - (Advanced) Write new samplers that take advantage of particular model structures
-
-
-We will start to look at which parameters are correlated and try blocking to improve mixing. Note that blocking is a good strategy to reduce computation time as well as improve mixing. Each iteration of the MCMC requires fewer computation steps when we sample in block. For instance in this example, when we sample `b0[1]` and `lambda[1]` separately, we change first change `b0[1]`, compute the density and the accept/reject, and then change `lambda[1]`, compute the density and accept/reject. By combining these into a block, we change them both at the same time, then compute the density and accept/reject.
-
-***Discussion*** Would we get a speed up if we block `b0[1]` and `b0[2]`?
-
-```{r}
-## Subset for key parameters
-library(coda)
-ids <- grepl("lambda|b0|sdre", colnames(samples[[1]]))
-out <- as.mcmc.list(lapply(samples, FUN = function(x){as.mcmc(x[, ids])}))
-crosscorr.plot(out)
-```
-
-It appears as if the detection parameter `b` and expected number of animals `lambda` are correlated. We will try block sampling them via a random walk. This will be faster but potentially worse mixing.
-
-```{r}
-conf$removeSamplers(c("b0", "lambda"))
-conf$addSampler(c("b0[1]", "lambda[1]"), type = "RW_block")
-conf$addSampler(c("lambda[2]", "b0[2]"), type = "RW_block")
-Rmcmc <- buildMCMC(conf)
-Cmodel <- compileNimble(Rmodel)
-Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples.rw <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), samplesAsCodaMCMC = TRUE)
-plot(samples.rw[,c('b0[1]', 'b0[2]')])
-plot(samples.rw[,c('lambda[1]', 'lambda[2]')])
-```
-
-***Discussion*** What can we marginalize in this model?
-
-## Sampler choices 
-
-- Sampling standard deviations on the  log scale can help, especially when there is posterior support near 0.
-- Slice sampling can help mix a parameter at some computational cost.
-- Hamiltonian Monte Carlo (HMC) can help mix blocks of parameters (often all parameters at once) but at heavy computational cost.
-- Blocking can help when parameters are correlated *given other parameters*.
-    - If parameters are *marginally correlated* but *conditionally independent*, blocking will not help.
-    - This occurs if parameters are marginally correlated only because they both depend on something else.
-- Model-specific understanding can yield good sampling strategies.
-
-Let's try a slice sampler on these in a block. This will be slower but better mixing. We will also sample `sdre` on the log scale.
-
-```{r}
-conf$removeSamplers(c("b0", "lambda", "sdre"))
-conf$addSampler(c("b0[1]", "lambda[1]"), type = "AF_slice")
-conf$addSampler(c("b0[2]", "lambda[2]"), type = "AF_slice")
-conf$addSampler("sdre", type = "RW", control = list(log = TRUE))
-Rmcmc <- buildMCMC(conf)
-Cmodel <- compileNimble(Rmodel)
-Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples.sl <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), samplesAsCodaMCMC = TRUE)
-plot(samples.sl[,c('b0[1]', 'b0[2]')])
-plot(samples.sl[,c('lambda[1]', 'lambda[2]')])
-plot(samples.sl[, "sdre"])
-
-ids <- grepl("lambda|b0|sdre", colnames(samples[[1]]))
-out <- as.mcmc.list(lapply(samples.sl, FUN = function(x){as.mcmc(x[, ids])}))
-crosscorr.plot(out)
-```
-
-***Discussion*** Can we try HMC on this model?
-
-## Centering covariates or random effects
-
-Centering refers to two issues:
-
-- Centering of covariates as they are provided for the analysis.
-    - Think of $y_i = \beta_0 + \beta_1 x_i + \epsilon_i$. 
-    - If the $x_i$ are not centered, then considering $\beta_1 \rightarrow \beta_1'$ is also like adding $(\beta_1' - \beta_1) \bar{x}$ to the intercept.
-    - A standard result in linear regression is that estimates of $\beta_0$ and $\beta_1$ are correlated.
-    - Centering $x_i$ around its mean removes the posterior correlation between $\beta_0$ and $\beta_1$.
-
-- Random effects with a mean of zero (non-centered parameterization) versus centered around a mean (centered parameterization).
-    - E.g., `random_effect ~ N(0, sd)` vs. `random_effect ~ N(mean, sd)`.
-    - Theory shows either parameterization can be better, depending on the model and data, but with reasonable amount of data, centered is often better.
-    - However, for HMC, uncentered is generally better!
-
-
-```{r}
-model_code_centered <- nimbleCode({
-
-  b0[1] ~ dnorm(0, sd = 3)
-  b0[2] ~ dnorm(0, sd = 3)
-  sdre ~ dunif(0, 10)
-    
-  lambda[1] ~ dgamma(0.1,0.1)
-  lambda[2] ~ dgamma(0.1,0.1)
-
-  for( s in 1:nstation ){
-    logitp[s,1] ~ dnorm(b0[1], sd = sdre) # centered parameterization
-    logitp[s,2] ~ dnorm(b0[2], sd = sdre)
-    N[s,1] ~ dpois(lambda[1])
-    N[s,2] ~ dpois(lambda[2])
-  }
-  
-  for( i in 1:nobs ){
-    logit(p[i]) <- logitp[station[i], spp[i]]
-    caught[i] ~ dbinom(size = N[station[i], spp[i]] - total[i], prob = p[i])
-  }
-})
-```
-
-## Hamiltonian Markov Chain (HMC)
-
-
-```{r}
-library(nimbleHMC)
-help(HMC)
-```
-
-We will explore our example from above but using HMC to sample it. Note that HMC uses something called "automatic differentiation" to get derivatives. Discrete nodes are not differentiable so HMC cannot be used to sample $N$. This is why you see programs like STAN require the user to marginalize over any latent nodes. 
-
-Note that NIMBLE can use HMC on just particular nodes, or across all nodes (unlike STAN). We will demonstrate that here as well. First we will just assign HMC to the continuous parameters, then we will marginalize over the $N$ nodes and sample with HMC again. Note that we will build derivs when we call `nimbleModel`.
-
-```{r}
-Rmodel <- nimbleModel(model_code, data = data, constants = constants, inits = inits(), buildDerivs = TRUE)
-
-conf <- configureMCMC(Rmodel, monitors = c("b0", "sdre", "lambda", "N", "p"))
-## Not the N nodes:
-paramNodes <- Rmodel$getNodeNames(stochOnly = TRUE, includeData = FALSE)
-paramNodes_c <- paramNodes[!grepl("N\\[", paramNodes)]
-conf$removeSamplers(paramNodes_c)
-conf$addSampler(target = paramNodes_c, type = 'NUTS')
-conf$printSamplers()
-
-Rmcmc <- buildMCMC(conf)
-Cmodel <- compileNimble(Rmodel)
-Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), 
-                   samplesAsCodaMCMC = TRUE)
-plot(samples[,c('b0[1]', 'b0[2]')])
-plot(samples[,c('lambda[1]', 'lambda[2]')])
-plot(samples[, "sdre"])
-
-sumdf <- data.frame(do.call("cbind", summary(samples)))
-sumdf$parameter = gsub("\\[.*", "", rownames(sumdf))
-sumdf$idx = gsub("*.\\[|\\]", "", rownames(sumdf))
-sumdf$Station = factor(gsub(",.*", "", sumdf$idx))
-sumdf$Species = c("AS", "BT")[as.numeric(gsub("*.,", "", sumdf$idx))]
-sumdf <- sumdf %>% 
-  mutate(Species = ifelse(idx == "lambd1", "AS", Species)) %>%
-  mutate(Species = ifelse(idx == "lambd2", "BT", Species))
-
-ggplot(data = sumdf %>% filter(parameter == "N"), aes(x = Station, y = Mean, colour = Species)) +
-  geom_point(position = position_dodge(width = 0.25)) + 
-  theme_bw() + ylab("Posterior Mean Abundance") +
-  geom_errorbar(aes(ymin = X2.5., ymax = X97.5., colour = Species), 
-    position = position_dodge(width = 0.25), width = 0.1) +
-  geom_hline(data = sumdf %>% filter(parameter == "lambda"), 
-    aes(yintercept = Mean, colour= Species), linetype='dashed')
-```
-
-Now to follow the similar to STAN approach we have to write a custom distribution for catch that marginalizes over $N$. Note the challenge here is that we need to write our own custom nimble function with some tricks for AD compiler. This means being explicit about integers and what we want the derivatives to be.
-
-The math for a marginal distribution looks like:
-
-\[
-  p(\mathbf{C}|\lambda, p) = \sum_{N=\sum c_i}^\infty p(\mathbf{C}|N, \lambda, p)p(N).
-\]
-
-Clearly, this infinite sum is not possible but we need only sum until `dpois(N, lambda)` is approximately zero.
-
-```{r}
-## Note that integers don't get AD.
-ddepletion <- nimbleFunction(
-  # setup = function(){},
-  run = function(x = double(1), p = double(), lambda = double(), 
-      nCaught = double(1), maxN = integer(), log = logical(0, default = FALSE)){
-
-    ## AD trick.
-    minN <- 0L
-    minN <- ADbreak(sum(x))
-
-    ans <- 0
-    for( i in minN:maxN ){
-      Ni <- i ## Another AD trick.
-      loglik_N <- sum(dbinom(x, size = Ni-nCaught, prob = p, log=TRUE)) + 
-        dpois(Ni, lambda, log=TRUE)
-
-      ans <- ans + exp(loglik_N) # Marginal is sum on probability scale!
-    }
-    
-    returnType(double())
-    if(log) 
-      return(log(ans))
-    else 
-      return(ans)
-  },
-  buildDerivs = list(run = list(ignore = c("i")))
-)
-## Test to make sure it compiles and then remove setup.
-# dtest <- ddepletion()
-# dtest$run(c(5,3,1), c(0.2), 15, c(0,5,8), 300)
-# ctest <- compileNimble(dtest)
-
-ddepletion(c(5,3,1), c(0.2), 15, c(0,5,8), 200)
-```
-
-Now that we have our custom distribution function, we can update our model code.
-
-```{r}
-model_code <- nimbleCode({
-
-  b0[1] ~ dnorm(0, sd = 3)
-  b0[2] ~ dnorm(0, sd = 3)
-  sdre ~ dunif(0, 10)
-    
-  lambda[1] ~ dgamma(0.1,0.1)
-  lambda[2] ~ dgamma(0.1,0.1)
-
-  for( s in 1:nstation ){
-    re[s] ~ dnorm(0, sd = sdre) # non-centered parameterization
-  }
-  
-  for( i in 1:nobs ){
-    logit(p[i]) <- b0[spp[i]] + re[station[i]]
-    caught[i,1:3] ~ ddepletion(p = p[i], lambda = lambda[spp[i]], nCaught = ncaught[i, 1:3], maxN = 200)
-  }
-})
-
-## Put data in wide format:
-dat92_wide <- catch %>% 
-  filter(Year == 1992, Species %in% c("AS", "BT")) %>%
-  pivot_wider(id_cols = c(Species, Site, Station, Year), values_from = Catch, names_from = Sweep)
-caught <- do.call('cbind', dat92_wide[, c("1", "2", "3")])
-ncaught <- t(apply(caught, 1, FUN = cumsum)) - caught
-data <- list(caught = caught)
-constants <- list(nobs = nrow(dat92_wide), 
-                  nstation = length(unique(dat92_wide$Station)), 
-                  station = dat92_wide$Station, spp = as.numeric(factor(dat92_wide$Species)),
-                  ncaught = ncaught, total = rowSums(caught))
-
-inits <- function(){
-  list(lambda = c(50, 30), b0 = rnorm(2,0,1), 
-       re = rnorm(constants$nstation, 0, 1), sdre = runif(1,0.5,2))
+  list(sigma = runif(1,0.1,3), logalpha = rnorm(1, 1.5, 3), logE = rnorm(1, 4, 2))
 }
 
-deregisterDistributions("ddepletion") ## Reset it for good practice if we update it.
-Rmodel <- nimbleModel(model_code, data = data, constants = constants, inits = inits(), buildDerivs = TRUE)
+samples <- runMCMC(cmcmc, niter = 10000, nburnin = 2000, 
+                    inits = inits(), nchains = 3, samplesAsCodaMCMC = TRUE)
 
-conf <- configureMCMC(Rmodel)
-conf$removeSamplers()
-paramNodes <- Rmodel$getNodeNames(stochOnly = TRUE, includeData = FALSE)
-conf$addSampler(target = paramNodes, type = 'NUTS')
-conf$printSamplers()
+plot(samples[, "logE"])
 
-## Can also use: Rmcmc <- buildHMC(Rmodel)
+samp.sum <- data.frame(do.call('cbind', summary(samples)))
+samp.sum$param <- rownames(samp.sum)
+samp.sum$method <- "MCMC"
+samp.sum$lci <- samp.sum$X2.5.
+samp.sum$uci <- samp.sum$X97.5.
 
-Cmodel <- compileNimble(Rmodel)
-Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-## Note this is slow but we also don't need very many samples. See 
-samples <- runMCMC(Cmcmc, niter = 1000, nburnin = 200, nchains = 3, 
-                   inits = inits(), samplesAsCodaMCMC = TRUE)
-plot(samples[,'sdre'])
-plot(samples[,c('b0[1]', 'b0[2]')])
-plot(samples[,c('lambda[1]', 'lambda[2]')])
+rlaplace <- buildLaplace(model)
+claplace <- compileNimble(rlaplace)
+mle <- claplace$findMLE()
+mle.sum <- claplace$summary(mle)
+mle.sum$params
+out <- rbind(samp.sum[, c("param", "Mean", "SD", "lci", "uci", "method")], 
+    data.frame(param = mle.sum$params$names, Mean = mle.sum$params$estimate, 
+      SD = mle.sum$params$stdError, lci = mle.sum$params$estimate - 1.96*mle.sum$params$stdError, 
+      uci = mle.sum$params$estimate + 1.96*mle.sum$params$stdError, method = "Laplace"))
+
+ggplot(data = out, aes(x = param, y = Mean, colour = method)) + 
+  geom_point(position = position_dodge(0.2)) +
+  geom_errorbar(aes(ymin = lci, ymax = uci), width = 0.01, position = position_dodge(0.2)) +
+  theme_bw()
+
+mle.logE <- out %>% filter(param == "logE", method == "Laplace")
+plot(samples[, "logE"], trace = FALSE)
+abline(v = mle.logE$Mean, col = 'red', lty = 2)
+lines(x = c(mle.logE[, "lci"], mle.logE[, "uci"]), y = c(0.02, 0.02), col = 'red', cex = 2)
+## We can see the symmetry assumption from the MLE is probably making this Wald CI poor.
 ```
 
+***Discuss Wald CI***
+
+## See the wildness of the dflat again to compare with the MLE...

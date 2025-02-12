@@ -88,7 +88,7 @@ $$
 \end{aligned}
 $$
 
-We will simulate the random effects `nsim` times and for each recalculate the log likelihood of the data, given those simulations. The average log likelihood is the marginal log likelihood. We can compare that with the 'true' log likelihood, which in this case the Laplace approximation is exact.
+We will simulate the random effects `nsim` times, and recalculate the log likelihood of the data for each simulation. The mean log likelihood becomes the estimate of the marginal log likelihood. We can compare that with the 'true' log likelihood, which in this case the Laplace approximation should be exact.
 
 ***Laplace***
 
@@ -96,11 +96,11 @@ We will simulate the random effects `nsim` times and for each recalculate the lo
   [\mbox{y | params}] \approx \frac{[\mbox{data | states, params}][\mbox{states | params}]}{[\mbox{states|data, params}]_G}
 \]
 
-The denominator, $[\mbox{states|data, params}]_G$ is a multivariate normal approximation of the posterior distribution of the states, evaluated at the posterior mode. This method requires an optimization of the state variables for every value of the parameters. Fast optimzation and efficient (and accurate) derivatives are critical. This is Laplace approximation is implemented often using automatic differentation (AD) available in packages such as `TMB` and `nimble`.
+The denominator, $[\mbox{states|data, params}]_G$ is a multivariate normal approximation of the posterior distribution of the states, evaluated at the posterior mode. This method requires an optimization of the state variables for every value of the parameters. Fast optimzation and efficient (and accurate) derivatives are critical. This is why Laplace approximation is implemented often using automatic differentiation (AD) available in packages such as `TMB` and `nimble`.
 
 ***Monte Carlo Integration***
 
-Monte Carlo integration is done by randomly generating the states, and then computing the log likelihood conditional on the states, time the probability of generating the sample, $p(\mbox{states}_i)$.
+Monte Carlo integration is done by randomly generating the states, and then computing the log likelihood conditional on the states, times the probability of generating the sample, $p(\mbox{states}_i)$.
 
 \[
   [\mbox{y | params}] \approx \sum_{i=1}^{N_{sim}} [\mbox{data | } \mbox{states}_i\mbox{, params}] [\mbox{states | params}] / p(\mbox{states}_i).
@@ -173,11 +173,12 @@ nsim <- 1000
 lik <- loglik_montecarlo(pars, TRUE)
 cumlik <- cumsum(lik)/1:nsim
 plot(1:nsim, log(cumlik), type = 'l', xlab = "# of Simulations", ylab = "Log Likelihood")
+abline(h=loglik_laplace(pars), lty = 'dashed')
 ```
 
-We see that by simulation, we can do pretty well, but it is slow. If we are using optimization to find the params, doing this on a function that includes Monte Carlo error can be a real challenge.
+We see that by simulation, we can do pretty well, but it is slow. If we are using optimization to find the parameters, doing this on a function that includes Monte Carlo error can be a real challenge. For an example of it being used within MCMC see [Bonner and Schofield (2013). MC(MC)MC: exploring Monte Carlo integration within MCMC for mark–recapture models with individual covariates.](https://doi.org/10.1111/2041-210X.12095).
 
-We will mostly focus on simulation based methods (MCMC) for inference in this course but revisit Laplace on the last day.
+We will mostly focus on simulation based methods (MCMC) for inference in this course but revisit Laplace near the end.
 
 - MCMC avoids integration by sampling proportional to the joint posterior distribution.
 
@@ -199,6 +200,7 @@ Two of the key standard MCMC samplers are Gibbs sampling, and random walk Metrop
 - Despite sounding simple, there is some computational cost.
 - Both JAGS and NIMBLE use conjugate samplers by default when available.
 - We sample proportional to the true posterior. As a result, when we use `density` to plot our samples, this normalizes the random samples to be approximately the marginal posterior distribution (No actual integration  done).
+- See Wikipedia for a list of conjugate priors: https://en.wikipedia.org/wiki/Conjugate_prior.
 
 Example, $y \sim Poisson(\lambda)$ and $\lambda \sim \text{gamma}(1,1)$. We will compare our Gibbs sampler with that of NIMBLE.
 

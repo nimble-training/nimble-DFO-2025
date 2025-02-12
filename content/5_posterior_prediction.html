@@ -11,7 +11,7 @@
 
 <meta name="author" content="NIMBLE Development Team" />
 
-<meta name="date" content="2025-02-06" />
+<meta name="date" content="2025-02-11" />
 
 <title>Posterior Predictions</title>
 
@@ -352,7 +352,7 @@ display: none;
 
 <h1 class="title toc-ignore">Posterior Predictions</h1>
 <h4 class="author">NIMBLE Development Team</h4>
-<h4 class="date">2025-02-06</h4>
+<h4 class="date">2025-02-11</h4>
 
 </div>
 
@@ -423,7 +423,7 @@ necessarily be the mean on the new scale.</p>
 transform that mean, denoted by <span class="math inline">\(\widehat{\cdot}\)</span>, this is not actually the
 mean on the real scale.</p>
 <p><span class="math display">\[
-  \widehat{\alpha} = \mbox{exp}(\widehat{\mbox{log}(\alpha)}).
+  \widehat{\alpha} \neq \mbox{exp}(\widehat{\mbox{log}(\alpha)}).
 \]</span></p>
 <p>If we want simple unbiased estimates on any scale, we need to
 transform the MCMC chain itself, and then calculate the new estimator.
@@ -441,12 +441,12 @@ mean(post.alpha)</code></pre>
 <p>In a Frequentist setting for log-normal data in stock assessment
 you’ll often see what they call a “bias correction” term (<span class="math inline">\(-\sigma/2\)</span>) added to the equation to make
 the estimated mean be correct on the real scale. For a good discussion
-on marginal means see Gory et al. (2020) “A class of generalized linear
-mixed models adjusted for marginal interpretability”.</p>
+on marginal means see <a href="https://doi.org/10.1002/sim.8782">Gory et
+al. (2020)</a>.</p>
 <p>Let’s see the difference for our reference points. Does the
 mean/median/mode make more sense for setting reference points? What is
 the interpretation of each?</p>
-<pre class="r"><code>## Bring in that nimble R call function again.
+<pre class="r"><code>## Bring in that nimble R call function again if we want to add this to the model code.
 Rlamw &lt;- function(x){
   if(!is.na(x)) ## NA dealt with to make life easy if model isn&#39;t initialized.
     return(gsl::lambert_W0(x))
@@ -458,29 +458,29 @@ nimLamW &lt;- nimbleRcall(prototype = function(x = double()){}, Rfun = &#39;Rlam
 
 smax &lt;- exp(out[,&quot;logE&quot;])/out[,&quot;logalpha&quot;]
 
-hist(smax[smax &lt; 10]) ## Some extreme values to remove.
+plot(density(smax[smax &lt; 10]), main = &quot;&quot;, xlab = expression(S[max]~scaled)) ## Some extreme values to remove.
 abline(v = mean(smax[smax &lt; 10]), col = &#39;red&#39;)
 abline(v = median(smax[smax &lt; 10]), col = &#39;blue&#39;)
 abline(v = MCMCglmm::posterior.mode(coda::mcmc(smax[smax &lt; 10])), col = &#39;red&#39;, lty = &quot;dashed&quot;)
 
 smsy &lt;- (1-gsl::lambert_W0(exp(1-out[,&quot;logalpha&quot;])))*smax
 
-plot(density(smsy[smax &lt; 10])) ## Some extreme values to remove.
+plot(density(smsy[smax &lt; 10]), main = &quot;&quot;, xlab = expression(S[msy]~scaled)) ## Some extreme values to remove.
 abline(v = mean(smsy[smax &lt; 10]), col = &#39;red&#39;)
 abline(v = median(smsy[smax &lt; 10]), col = &#39;blue&#39;)
 abline(v = MCMCglmm::posterior.mode(coda::mcmc(smsy[smax &lt; 10])), col = &#39;red&#39;, lty = &quot;dashed&quot;)
 
 sgen &lt;- -gsl::lambert_W0(-smsy/(exp(out[,&quot;logalpha&quot;])*smax))*smax
 
-plot(density(sgen[smax &lt; 10])) ## Some extreme values to remove.
+plot(density(sgen[smax &lt; 10]), main = &quot;&quot;, xlab = expression(S[gen]~scaled)) ## Some extreme values to remove.
 abline(v = mean(sgen[smax &lt; 10]), col = &#39;red&#39;)
 abline(v = median(sgen[smax &lt; 10]), col = &#39;blue&#39;)
-abline(v = MCMCglmm::posterior.mode(coda::mcmc(sgen[smax &lt; 10])), col = &#39;red&#39;, lty = &quot;dashed&quot;)\</code></pre>
+abline(v = MCMCglmm::posterior.mode(coda::mcmc(sgen[smax &lt; 10])), col = &#39;red&#39;, lty = &quot;dashed&quot;)</code></pre>
 </div>
 <div id="posterior-predictive-check" class="section level2">
 <h2>Posterior Predictive Check</h2>
 <p>A challenge with bespoke Bayesian models is that it can be harder to
-do model checking. Luckily, the R packages <code>DHARMa</code> combined
+do model checking. Luckily, the R package <code>DHARMa</code> combined
 with nimble’s posterior prediction capability makes this relatively
 easy.</p>
 <p>We will start by writing a completely flexible posterior prediction
