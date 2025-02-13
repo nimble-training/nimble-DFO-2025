@@ -20,17 +20,23 @@ This workshop will focus on the `nimble` R package, not on statistical methodolo
 
 Tuesday February 18th:
 
-1. (9:00 am - 10:00 am) Primer: Coding in the NIMBLE model language (a dialect of the BUGS language)
-2. (10:00 am - 10:50 am) Introduction to NIMBLE: Basic concepts and workflows
-3. (11:00 am - 12:30 am) Comparing and customizing MCMC methods in NIMBLE
-4. (11:00 am - 12:00 pm) User-defined distributions and functions in models
+1. (9:00 am - 9:30 am) Introductions and quick review of module 0, basic introduction to NIMBLE.
+2. (9:30 am - 10:20 am) Introduction to Bayesian Statistics: Basic theory 
+3. (10:30 am - 11:20 am) Introduction to NIMBLE
+4. (11:30 am - 12:30 pm) Continued Introduction to NIMBLE
 
 Wednesday February 19th:
 
-7. (9:00 am - 10:00 am) Strategies for improving MCMC
-8. (10:00 am - 10:50 am) Special modeling components and methods (spatial, Bayesian non-parametrics, and reversible jump for variable selection)
-9. (3:00 pm - 3:50 pm) Laplace approximation and other numerical methods in NIMBLE
-10. (4:00 pm - 4:50 pm) More nimble programming features and techniques
+7. (9:00 am - 10:20 am) User defined distributions.
+8. (10:30 am - 11:50 am) Improving MCMC sampling
+9. (12:00 pm - 12:30 pm) Posterior Predictions
+
+Thursday February 20th:
+
+10. (9:00 am - 9:50 am) Special Topics - Bayesian nonparametrics
+11. (10:00 am - 10:50 am) Special Topics - Bayesian variable selection
+12. (11:00 am - 11:50 am) Special Topics - Numerical methods
+13. (12:00 pm - 12:30 pm) If time, writing your own MCMC sampler
 
 ## Help with NIMBLE
 
