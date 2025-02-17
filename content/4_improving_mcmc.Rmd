@@ -49,7 +49,7 @@ catch <- remdf %>%
 
 catch <- catch %>% group_by(Site, Station, Year, Species) %>%
   arrange(Sweep) %>%
-  mutate(nCatch = cumsum(Catch)-Catch) %>%
+  mutate(prevCatch = cumsum(Catch)-Catch) %>%
   ungroup() %>%
   mutate(Station = as.numeric(Station))
 
@@ -107,7 +107,7 @@ model_code <- nimbleCode({
 
 dat92 <- catch %>% filter(Year == 1992, Species %in% c("AS", "BT"))
 data <- list(caught = dat92$Catch)
-constants <- list(nobs = nrow(dat92), total = dat92$nCatch, 
+constants <- list(nobs = nrow(dat92), total = dat92$prevCatch, 
                   nstation = length(unique(dat92$Station)), 
                   station = dat92$Station, spp = as.numeric(factor(dat92$Species)))
 

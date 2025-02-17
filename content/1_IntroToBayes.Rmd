@@ -27,7 +27,7 @@ knitr_opts <- list(
   autodep = TRUE,
   cache.comments = TRUE,
   fig.align = "center",
-  echo = FALSE,
+  echo = TRUE,
   results = 'hide'
 )
 do.call(knitr::opts_chunk$set, knitr_opts)
@@ -44,7 +44,7 @@ In a hierarchical model, we typically have:
 A Frequentist maximizes the likelihood, the distribution of the data given the parameters, over the parameters. The likelihood can be written as
 
 \[
-L(params|data) = [\mbox{data | states, params}][\mbox{states | params}].
+L(\mbox{params}|\mbox{data}) = [\mbox{data | states, params}][\mbox{states | params}].
 \]
 
 - $[\cdot]$ indicates probability density or mass.
@@ -87,8 +87,52 @@ $$
   x_j & \sim N(0, 0.05)
 \end{aligned}
 $$
+In this example, we know that the true marginal distribution of $\mathbf{y}_i$ is
+\[
+  \mathbf{y}_i \sim \mbox{N}(\boldsymbol{\mu},\Sigma),
+\]
+with,
 
-We will simulate the random effects `nsim` times, and recalculate the log likelihood of the data for each simulation. The mean log likelihood becomes the estimate of the marginal log likelihood. We can compare that with the 'true' log likelihood, which in this case the Laplace approximation should be exact.
+\begin{equation}
+
+  \Sigma = 
+  \begin{bmatrix}
+  \sigma_y^2 + \sigma_x^2 & \ldots & \sigma_x^2 \\
+  \vdots & \sigma_y^2 + \sigma_x^2 & \vdots \\
+  \sigma_x^2 & \ldots & \sigma_y^2 + \sigma_x^2 \\
+  \end{bmatrix}
+
+\end{equation}
+We can compare the true log likelihood with different methods for approximating it.
+
+
+```{r}
+## Model equivalent to y ~ 1 + (1|grp) in lme4 and glmmTMB syntax.
+## Intercept = mu.
+
+n <- 70
+x <- rnorm(7, 0, 0.05)
+y <- rnorm(n, 3 + rep(x, each = 10), 0.25)
+grp <- rep(1:7, each = 10)
+nsim <- 1000
+
+## True log likelihood:
+loglik <- function(pars){
+  sigma_y <- exp(pars[1])
+  sigma_x <- exp(pars[2])
+  mu <- pars[3]
+  ans <- 0
+  for( i in unique(grp) ){
+    ngrp <- sum(grp == i)
+    S <- matrix(sigma_x^2, ngrp, ngrp)
+    diag(S) <- diag(S) + sigma_y^2
+    ygrp <- y[grp == i]
+    ans <- ans + nimble::dmnorm_chol(ygrp, mean = mu, chol(S), prec_param = FALSE, log=TRUE)
+  }
+  return(ans)
+}
+```
+
 
 ***Laplace***
 
@@ -96,7 +140,34 @@ We will simulate the random effects `nsim` times, and recalculate the log likeli
   [\mbox{y | params}] \approx \frac{[\mbox{data | states, params}][\mbox{states | params}]}{[\mbox{states|data, params}]_G}
 \]
 
-The denominator, $[\mbox{states|data, params}]_G$ is a multivariate normal approximation of the posterior distribution of the states, evaluated at the posterior mode. This method requires an optimization of the state variables for every value of the parameters. Fast optimzation and efficient (and accurate) derivatives are critical. This is why Laplace approximation is implemented often using automatic differentiation (AD) available in packages such as `TMB` and `nimble`.
+The denominator, $[\mbox{states|data, params}]_G$ is a multivariate normal approximation of the posterior distribution of the states, evaluated at the posterior mode. This method requires an optimization of the state variables for every value of the parameters. For optimization, efficient (and accurate) derivatives are critical. This is why Laplace approximation is implemented often using automatic differentiation (AD) available in packages such as `TMB` and `nimble`.
+
+```{r}
+loglik_laplace <- function(pars){
+  sigma_y <- exp(pars[1])
+  sigma_x <- exp(pars[2])
+  mu <- pars[3]
+  ngrp <- length(unique(grp))
+  negll <- function(x) {
+    -sum(dnorm(y, mu + x[grp], sigma_y, log = TRUE)) - 
+      sum(dnorm(x, 0, sigma_x, log = TRUE))
+  }
+  grnegll <- function(x){
+    gr <- 2*(x-0)/(2*sigma_x^2)
+    for( i in 1:ngrp ){
+      gr[i] <- gr[i] - 2*sum((y[grp == i] - x[i] - mu))/(2*sigma_y^2)
+    }
+    gr
+  }
+  fit <- optim(rep(0,ngrp), negll, grnegll, hessian = TRUE)
+  0.5*ngrp*log(2*pi) - 0.5*log(det(fit$hessian)) - fit$value
+}
+
+## Approximate log likelihood by each method:
+pars <- c(log(0.25), log(0.05), 3)
+loglik_laplace(pars)
+
+```
 
 ***Monte Carlo Integration***
 
@@ -112,35 +183,8 @@ Note that when we sample directly from $[\mbox{states | params}]$, this reduces 
 \]
 
 
-```{r, echo = TRUE}
-## Model equivalent to y ~ 1 + (1|grp) for those familiar with lme4 and glmmTMB syntax.
-## Intercept = mu.
 
-n <- 70
-x <- rnorm(7, 0, 0.05)
-y <- rnorm(n, 3 + rep(x, each = 10), 0.25)
-grp <- rep(1:7, each = 10)
-nsim <- 1000
-
-loglik_laplace <- function(pars){
-  sigma_y <- exp(pars[1])
-  sigma_x <- exp(pars[2])
-  mu <- pars[3]
-  ngrp <- length(unique(grp))
-  negll <- function(x) {
-    -sum(dnorm(y, mu + x[grp], sigma_y, log = TRUE)) - sum(dnorm(x, 0, sigma_x, log = TRUE))
-  }
-  grnegll <- function(x){
-    gr <- 2*(x-0)/(2*sigma_x^2)
-    for( i in 1:ngrp ){
-      gr[i] <- gr[i] - 2*sum((y[grp == i] - x[i] - mu))/(2*sigma_y^2)
-    }
-    gr
-  }
-  fit <- optim(rep(0,ngrp), negll, grnegll, hessian = TRUE)
-  0.5*ngrp*log(2*pi) - 0.5*log(det(fit$hessian)) - fit$value
-}
-
+```{r}
 loglik_montecarlo <- function(pars, demo = FALSE){
   sigma_y <- exp(pars[1])
   sigma_x <- exp(pars[2])
@@ -161,6 +205,7 @@ loglik_montecarlo <- function(pars, demo = FALSE){
 pars <- c(log(0.25), log(0.05), 3)
 loglik_montecarlo(pars)
 loglik_laplace(pars)
+loglik(pars)
 
 ## More simulation means for accuracy:
 nsim <- 100
@@ -173,7 +218,8 @@ nsim <- 1000
 lik <- loglik_montecarlo(pars, TRUE)
 cumlik <- cumsum(lik)/1:nsim
 plot(1:nsim, log(cumlik), type = 'l', xlab = "# of Simulations", ylab = "Log Likelihood")
-abline(h=loglik_laplace(pars), lty = 'dashed')
+abline(h=loglik_laplace(pars), lty = 2, lwd=1.5)
+abline(h=loglik(pars), lty = 3, col = 'red', lwd=1.5)
 ```
 
 We see that by simulation, we can do pretty well, but it is slow. If we are using optimization to find the parameters, doing this on a function that includes Monte Carlo error can be a real challenge. For an example of it being used within MCMC see [Bonner and Schofield (2013). MC(MC)MC: exploring Monte Carlo integration within MCMC for mark–recapture models with individual covariates.](https://doi.org/10.1111/2041-210X.12095).
@@ -204,7 +250,7 @@ Two of the key standard MCMC samplers are Gibbs sampling, and random walk Metrop
 
 Example, $y \sim Poisson(\lambda)$ and $\lambda \sim \text{gamma}(1,1)$. We will compare our Gibbs sampler with that of NIMBLE.
 
-```{r, echo = TRUE, eval = FALSE}
+```{r, eval = FALSE}
 library(nimble)
 y <- rpois(100, 3)
 post.lambda <- rgamma(10000, 1 + sum(y), 1+100) ## 10000 Gibbs samples for lambda.
@@ -297,7 +343,7 @@ nextTargetDist <- 0.03 * dnorm(theta1, 2.4, 0.2)
 - Others being developed and added (e.g. Polya-Gamma sampler)
 - Samplers that you write!!
 
-```{r, eval = FALSE, echo = TRUE}
+```{r, eval = FALSE}
 ?samplers
 ```
 

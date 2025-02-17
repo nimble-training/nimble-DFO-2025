@@ -38,11 +38,9 @@ do.call(knitr::opts_chunk$set, knitr_opts)
 
 - A framework for hierarchical statistical models and methods.
 - An extension of the BUGS/JAGS language for:
-
-    - writing new functions and distributions using **nimbleFunctions**
-    - named alternative parameterizations (e.g. sd vs precision for `dnorm`).
+    - Writing new functions and distributions using **nimbleFunctions**
+    - Named alternative parameterizations (e.g. sd vs precision for `dnorm`).
     - Additional R-like coding, including vectorized declarations.
-    
 - A configurable system for MCMC.
 - A model-generic programming system to write new analysis methods using (two-stage) nimbleFunctions.
 - A growing library of other methods.
@@ -59,13 +57,13 @@ do.call(knitr::opts_chunk$set, knitr_opts)
 - Sequential Monte Carlo (aka particle filtering) and Particle MCMC (package *nimbleSMC*).
 - Laplace approximation and adaptive Gauss-Hermite quadrature (for maximum likelihood, included in *nimble* for now, to be moved to *nimbleQuad* soon!).
 - Coming soon: methods related to Integrated Nested Laplace Approximation (INLA).
-- Monte Carlo Expectation Maximization (MCEM, for maximum liklihood) (included in *nimble*).
+- Monte Carlo Expectation Maximization (MCEM, for maximum likelihood) (included in *nimble*).
 - Reversible Jump MCMC (RJMCMC) for variable selection (included in *nimble*).
 - Marginal distributions for ecological models (capture-recapture, occupancy, dynamic occupancy, N-mixture, Hidden Markov models) (package *nimbleEcology*).
 - Functions and distributions for spatial capture-recapture (package *nimbleSCR*).
 - Conditional autoregressive (CAR) spatial models (included in *nimble*).
 - Bayesian non-parametric (BNP) distributions (included in *nimble*).
-- Non-stationary Gaussian processes (package *NSGP*).
+- Non-stationary Gaussian processes (package *BayesNSGP*).
 
 ## NIMBLE Code and Model:
 
@@ -102,7 +100,7 @@ mod$getNodeNames(dataOnly = TRUE)[1:10]
 mod$calculate()
 
 mod$simulate()
-hist(mod$x, freq = FALSE)
+hist(mod$x, freq = FALSE, main = "", xlab = "x")
 
 ## Let's find the log likelihood for all values.
 x <- seq(-3, 3, by = 0.1)

@@ -11,7 +11,7 @@
 
 <meta name="author" content="NIMBLE Development Team" />
 
-<meta name="date" content="2025-02-11" />
+<meta name="date" content="2025-02-17" />
 
 <title>Introduction to NIMBLE</title>
 
@@ -352,7 +352,7 @@ display: none;
 
 <h1 class="title toc-ignore">Introduction to NIMBLE</h1>
 <h4 class="author">NIMBLE Development Team</h4>
-<h4 class="date">2025-02-11</h4>
+<h4 class="date">2025-02-17</h4>
 
 </div>
 
@@ -365,24 +365,23 @@ text-align: center;
 <div id="what-is-nimble" class="section level2">
 <h2>What Is NIMBLE?</h2>
 <ul>
-<li><p>A framework for hierarchical statistical models and
-methods.</p></li>
-<li><p>An extension of the BUGS/JAGS language for:</p>
+<li>A framework for hierarchical statistical models and methods.</li>
+<li>An extension of the BUGS/JAGS language for:
 <ul>
-<li>writing new functions and distributions using
+<li>Writing new functions and distributions using
 <strong>nimbleFunctions</strong></li>
-<li>named alternative parameterizations (e.g. sd vs precision for
+<li>Named alternative parameterizations (e.g. sd vs precision for
 <code>dnorm</code>).</li>
 <li>Additional R-like coding, including vectorized declarations.</li>
 </ul></li>
-<li><p>A configurable system for MCMC.</p></li>
-<li><p>A model-generic programming system to write new analysis methods
-using (two-stage) nimbleFunctions.</p></li>
-<li><p>A growing library of other methods.</p></li>
-<li><p>A growing package ecosystem of other methods.</p></li>
-<li><p><strong>N</strong>umerical <strong>I</strong>nference for
+<li>A configurable system for MCMC.</li>
+<li>A model-generic programming system to write new analysis methods
+using (two-stage) nimbleFunctions.</li>
+<li>A growing library of other methods.</li>
+<li>A growing package ecosystem of other methods.</li>
+<li><strong>N</strong>umerical <strong>I</strong>nference for
 statistical <strong>M</strong>odels using <strong>B</strong>ayesian and
-<strong>L</strong>ikelihood <strong>E</strong>stimation.</p></li>
+<strong>L</strong>ikelihood <strong>E</strong>stimation.</li>
 </ul>
 </div>
 <div id="the-winbugsopenbugsjags-language-has-made-a-huge-impact-on-applied-bayesian-statistics." class="section level2">
@@ -401,7 +400,7 @@ maximum likelihood, included in <em>nimble</em> for now, to be moved to
 <em>nimbleQuad</em> soon!).</li>
 <li>Coming soon: methods related to Integrated Nested Laplace
 Approximation (INLA).</li>
-<li>Monte Carlo Expectation Maximization (MCEM, for maximum liklihood)
+<li>Monte Carlo Expectation Maximization (MCEM, for maximum likelihood)
 (included in <em>nimble</em>).</li>
 <li>Reversible Jump MCMC (RJMCMC) for variable selection (included in
 <em>nimble</em>).</li>
@@ -414,7 +413,7 @@ occupancy, dynamic occupancy, N-mixture, Hidden Markov models) (package
 <em>nimble</em>).</li>
 <li>Bayesian non-parametric (BNP) distributions (included in
 <em>nimble</em>).</li>
-<li>Non-stationary Gaussian processes (package <em>NSGP</em>).</li>
+<li>Non-stationary Gaussian processes (package <em>BayesNSGP</em>).</li>
 </ul>
 </div>
 <div id="nimble-code-and-model" class="section level2">
@@ -459,7 +458,7 @@ mod$getNodeNames(dataOnly = TRUE)[1:10]
 mod$calculate()
 
 mod$simulate()
-hist(mod$x, freq = FALSE)
+hist(mod$x, freq = FALSE, main = &quot;&quot;, xlab = &quot;x&quot;)
 
 ## Let&#39;s find the log likelihood for all values.
 x &lt;- seq(-3, 3, by = 0.1)
@@ -1181,7 +1180,7 @@ are going to put a truncated normal prior on <span class="math inline">\(\rho \i
 <pre class="r"><code>sox &lt;- sox %&gt;% arrange(broodyear)
 deltat &lt;- sox$broodyear - lag(sox$broodyear)
   
-sox_model_AR1 &lt;- nimbleCode({
+sox_model_MA1 &lt;- nimbleCode({
   # Priors
   logalpha ~ dnorm(1.5, sd = 10)
   sigma ~ dunif(0, 10)
@@ -1200,7 +1199,7 @@ sox_model_AR1 &lt;- nimbleCode({
   }
 })
 
-model &lt;- nimbleModel(sox_model_AR1,
+model &lt;- nimbleModel(sox_model_MA1,
                     constants = list(nobs = nrow(sox), S = sox$spawners/spscale, deltat = deltat),
                     data = list(logRS = sox$logRS),
                     inits = list(logalpha = 1.5, delta = 0.25, logE = 2, sigma = 0.5, rho = 0))

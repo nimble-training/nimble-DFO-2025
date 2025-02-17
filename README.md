@@ -16,7 +16,7 @@ All materials for the workshop will be in this GitHub repository. If you're fami
 
 This workshop will focus on the `nimble` R package, not on statistical methodology per se.  The material assumes attendees have basic knowledge of fisheries and ecological statistical models (e.g., basic stock recruit models and generalize linear mixed models). You will still be able to follow the workshop without this background, but the workshop is geared towards participants already familiar with standard statistical topics.
 
-## Tentative Schedule (Under construction)
+## Tentative Schedule
 
 Tuesday February 18th:
 
