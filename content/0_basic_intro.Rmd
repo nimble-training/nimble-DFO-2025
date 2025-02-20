@@ -122,8 +122,9 @@ library(nimble)
 
 modelcode <- nimbleCode({
   ## Priors
-  beta[1] ~ dnorm(0,10) 
-  beta[2] ~ dnorm(0,10)
+  ## beta[1] ~ dnorm(0, sd = 10)
+  beta[1] ~ dflat()
+  beta[2] ~ dnorm(0, sd = 10)
   sigma ~ dunif(0,20)
   
   ## Build the Likelihood
@@ -146,9 +147,9 @@ We can then finally define the nimble code as a nimble model.
 ```{r, echo = TRUE}
 model <- nimbleModel(code = modelcode, constants = model_constants,
                     data = model_data)
-## model$getNodeNames(determOnly = TRUE)
-## model$getNodeNames(stochOnly = TRUE) ## Data and Priors
-## model$getNodeNames(stochOnly = TRUE, includeData = FALSE) ## Priors
+# model$getNodeNames(determOnly = TRUE)
+# model$getNodeNames(stochOnly = TRUE) ## Data and Priors
+# model$getNodeNames(stochOnly = TRUE, includeData = FALSE) ## Priors
 ```
 
 Now we have a model in NIMBLE that we can start to manipulate. We will initialize it manually by interacting directly with the model.

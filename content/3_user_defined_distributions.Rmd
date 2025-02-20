@@ -105,7 +105,7 @@ sumNimList <- nimbleList(mean = double(), sd = double())
 
 Rnimsum <- nimbleFunction(
   setup = function(){
-    out <- sumNimList$new()  
+    out <- sumNimList$new()
   },
   run = function(x = double(1)){
     out$mean <-  mean(x)
@@ -166,9 +166,10 @@ Now we will write out own distribution function to marginalize over $z$. Note th
 ```{r}
 dnorm_mix <- nimbleFunction(
   run = function(x = double(), mean = double(1), sd = double(1), 
-                 p = double(1),  log = logical(0, default = FALSE)) {
+                 p = double(1), log = logical(0, default = FALSE)) {
     
-    ans <- p[1]*dnorm(x, mean[1], sd[1], log = FALSE) + p[2]*dnorm(x, mean[2], sd[2], log = FALSE)
+    ans <- p[1]*dnorm(x, mean[1], sd[1], log = FALSE) + 
+            p[2]*dnorm(x, mean[2], sd[2], log = FALSE)
     
     returnType(double())
     if(log)
@@ -185,7 +186,7 @@ modelcode <- nimbleCode({
     mu[i] ~ dnorm(0, sd = 5)
     sigma[i] ~ dunif(0,20)
   }  
-  ## one ~ dconstraint(mu[1] < mu[2])  ## Is label switching still a problem
+  ## one ~ dconstraint(mu[1] < mu[2])  ## Is label switching still a problem?
 
   for(i in 1:100){
     y[i] ~ dnorm_mix(mu[1:2], sd = sigma[1:2], p = p[1:2])
@@ -281,7 +282,7 @@ z <- numeric(n)
 y <- numeric(n)
 mu <- c(2, 20)
 sigma <- c(1.5, 5)
-pmat <- rbind(c(0.25, 0.75), c(0.15, 0.55))
+pmat <- rbind(c(0.25, 0.75), c(0.15, 0.85))
 z[1] <- sample(2,1)
 y[1] <- rnorm(1, mu[z[1]], sigma[z[1]])
 for( i in 2:n ){

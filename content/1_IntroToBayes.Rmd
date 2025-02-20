@@ -166,6 +166,7 @@ loglik_laplace <- function(pars){
 ## Approximate log likelihood by each method:
 pars <- c(log(0.25), log(0.05), 3)
 loglik_laplace(pars)
+loglik(pars)
 
 ```
 
@@ -256,8 +257,9 @@ y <- rpois(100, 3)
 post.lambda <- rgamma(10000, 1 + sum(y), 1+100) ## 10000 Gibbs samples for lambda.
 
 demoCode <- nimbleCode({
-  for(i in 1:n) 
+  for(i in 1:n) {
       y[i] ~ dpois(lambda)
+  }
   lambda ~ dgamma(shape = 1, rate = 1)
 })
 

@@ -98,6 +98,9 @@ mod$setData("x")
 mod$getNodeNames(dataOnly = TRUE)[1:10]
 
 mod$calculate()
+mod$getLogProb()
+mod$getLogProb("x[1]")
+mod$logProb_x[1]
 
 mod$simulate()
 hist(mod$x, freq = FALSE, main = "", xlab = "x")
@@ -175,10 +178,13 @@ conf$printSamplers()
 mcmc <- buildMCMC(conf)
 mcmc$run(100)
 cmcmc <- compileNimble(mcmc)  ## Must have model compiled too.
-cmcmc$run(100)
+cmcmc$run(10000)
 
 samples <- as.matrix(cmcmc$mvSamples)
 hist(samples[,'x[3]'])
+## last samples are stored in cmod as well.
+samples[10000,'x[3]']
+cmod$x[3]
 ```
 
 ![](img/nimble_basics.png)
@@ -239,7 +245,7 @@ Let's think about some prior distributions. The error term, $\sigma$, is likely 
 library(nimble)
 sox_model_code_1 <- nimbleCode({
   # Priors
-  logalpha ~ dunif(0, 10)
+  logalpha ~ dunif(0, 20)
   sigma ~ dunif(0, 10)
   E ~ dhalfflat() ## This is potentially a really big number.
   
@@ -261,7 +267,7 @@ To turn code into an object, we need to provide some combination of:
 model <- nimbleModel(sox_model_code_1,
                      constants = list(nobs = nrow(sox), S = sox$spawners/spscale),
                      data = list(logRS = sox$logRS),
-                     inits = list(sigma = 1, logalpha = 2, E = 10))
+                     inits = list(sigma = 1, logalpha = 2, E = 2))
 ```
 
 We can interact with our model and run it directly in R. First we'll need to give it some initial values. If we want the model to save the values and then update, we can use `calculate` to actually run the model and return the log posterior density.
@@ -276,7 +282,7 @@ fn <- function(pars){
   -model$calculate(calcNodes)
 }
 fit.nim <- optim(c(1.5, 2, log(0.5)), fn) ## Slow as model not compiled into C++
-fit.nim$par 
+fit.nim$par
 ```
 
 ```{r}
@@ -298,6 +304,7 @@ param_nodes <- c("logalpha", "E", "sigma")
 sim_nodes <- model$getDependencies(param_nodes, self = FALSE)
 model$simulate(sim_nodes, includeData = TRUE)
 plot(model$logRS, sox$logRS, xlab = "Simulated Data", ylab = "Original Data")
+
 ## ***Better reset the data***
 model$logRS <- sox$logRS
 model$calculate()
@@ -441,7 +448,7 @@ calc_smax <- function(logalpha, E){
   return(E/logalpha)
 }
 ## Posteroir of smax:
-smax <- calc_smax(samples[,"logalpha"], samples[,"E"])*10000
+smax <- calc_smax(samples[,"logalpha"], samples[,"E"])*spscale[1]
 
 calc_smsy <- function(smax, logalpha){
     (1-gsl::lambert_W0(exp(1-logalpha)))*smax
@@ -461,7 +468,8 @@ We can actually use Lambert W in our nimble code by adding it to nimble via `nim
 We need to let nimble know what data types of input and output to expect from the function. NIMBLE can then interact with the R function within the nimble code itself. Even after it's compiled in C++, nimble will call R separately to execute the `nimbleRcall` function. 
 
 Data types in nimble include:
-- `double()`: where double(0) is a scalar, double(1) vector, double(2) matrix, and double(n) array of dimension n.
+
+- `double()`: where `double(0)` is a scalar, `double(1)` vector, `double(2)` matrix, and `double(n)` array of dimension `n`.
 - `integer()`: Same as double above but for integers.
 - `character()`: same as above but for strings/characters.
 - `logical()`: Same as above but for Boolean (`TRUE`/`FALSE`) variables.
@@ -535,7 +543,7 @@ cmodel$sgen*exp(cmodel$logalpha * (1-cmodel$sgen/cmodel$E) ) - cmodel$smsy
 We have seen create model `nimbleModel` and `nimbleMCMC`. However, to understand and customize your model, it's best to actually configure and build MCMC explicitly. Let's find out about what MCMC algorithms are assigned by default.
 
 ```{r}
-conf <- configureMCMC(model)
+conf <- configureMCMC(model, monitors = c("sigma", "logalpha", "logE", "smax", "smsy", "sgen"))
 conf$printSamplers()
 ```
 
@@ -556,29 +564,32 @@ mcmc$run(10)
 ## Compile the MCMC
 cmcmc <- compileNimble(mcmc)
 
-
 ## Manually run 1000 iterations.
 cmcmc$run(1000)
 
 ## sigma adaptive random walk sampler.
-cmcmc$samplerFunctions[[2]]$acceptanceHistory
-cmcmc$samplerFunctions[[2]]$scaleHistory
-plot(samples[, "sigma"])
+plot(cmcmc$samplerFunctions[[2]]$acceptanceHistory)
+abline(h = 0.44)
+plot(cmcmc$samplerFunctions[[2]]$scaleHistory)
 
 ## Extract current samples from mcmc object.
 samples <- coda::mcmc(as.matrix(cmcmc$mvSamples))
 plot(samples[, "logE"])
+plot(samples[, "sigma"])
+plot(samples[, "logalpha"])
 ```
 
 Now we have done a test run of the MCMC and we are happy with how things are looking we might want to run multiple chains and check convergence and report. This is where `runMCMC` is really helpful. Note that the burn-in and the number of iterations used here are an example and not indicative of what we might want to use in a real analysis.
 
 ```{r}
 inits <- function(){
-  list(sigma = runif(1,0.1,3), logalpha = rnorm(1, 1.5, 3), logE = rnorm(1, 4, 2))
+  list(sigma = runif(1,0.1,3), logalpha = runif(1, 0.5, 4), logE = rnorm(1, 4, 2))
 }
-samples <- runMCMC(cmcmc, niter = 5000, nburnin = 1000, 
+samples <- runMCMC(cmcmc, niter = 10000, nburnin = 5000, 
                     inits = inits, nchains = 3, samplesAsCodaMCMC = TRUE)
 plot(samples[, "logE"])
+plot(samples[, "sigma"])
+plot(samples[, "logalpha"])
 ```
 
 ## Combining Mutliple Stocks:
@@ -651,7 +662,7 @@ cmodel <- compileNimble(model)
 conf <- configureMCMC(model)
 mcmc <- buildMCMC(conf)
 cmcmc <- compileNimble(mcmc)
-samples <- runMCMC(cmcmc, niter = 5000, nburnin = 1000, 
+samples <- runMCMC(cmcmc, niter = 5000, nburnin = 2000, 
                     inits = inits, nchains = 3, samplesAsCodaMCMC = TRUE)
 plot(samples[, "logE[1]"])
 plot(samples[, "logE[3]"])
@@ -695,6 +706,7 @@ $$
 ```{r}
 sox_model_code_multiH <- nimbleCode({
 
+  ## Hyperparameters
   sigma ~ dunif(0, 10)
   logE0 ~ dnorm(3, sd=5)
   loga0 ~ dnorm(1.5, sd=5)
@@ -769,6 +781,7 @@ sum.out %>%
   ylab("Mean logE")
 
 sum.out %>% filter(param %in% c("loga0", "logE0"))
+sum.out %>% filter(param %in% c("sigma_e", "sigma_a"))
 ```
 
 #### Discussion 
@@ -829,7 +842,7 @@ sox_model_MA1 <- nimbleCode({
 model <- nimbleModel(sox_model_MA1,
                     constants = list(nobs = nrow(sox), S = sox$spawners/spscale, deltat = deltat),
                     data = list(logRS = sox$logRS),
-                    inits = list(logalpha = 1.5, delta = 0.25, logE = 2, sigma = 0.5, rho = 0))
+                    inits = list(logalpha = 1.5, logE = 2, sigma = 0.5, rho = 0))
 cmodel <- compileNimble(model)
 
 conf <- configureMCMC(model, monitors = c("E", "sigma", "rho", "logalpha"))
@@ -864,7 +877,7 @@ sox_model_mix <- nimbleCode({
   sigma ~ dunif(0, 10)
   logE ~ dnorm(2, sd = 3)
   E <- exp(logE)
-  delta ~ dnorm(0, sd = 2)  ## Essentially a half normal.
+  delta ~ T(dnorm(0, sd = 2),0,)  ## Essentially a half normal.
   p ~ dbeta(1,1)
   
   # Likelihood:

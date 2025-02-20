@@ -127,7 +127,7 @@ conf <- configureMCMC(Rmodel, monitors = c("b0", "sdre", "lambda", "N", "p"))
 Rmcmc <- buildMCMC(conf)
 Cmodel <- compileNimble(Rmodel)
 Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
-samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits(), 
+samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, inits = inits, 
                    samplesAsCodaMCMC = TRUE)
 plot(samples[,'sdre'])
 plot(samples[,c('b0[1]', 'b0[2]')])
