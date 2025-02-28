@@ -111,8 +111,9 @@ model_code_pg <- nimbleCode({
   y[i] ~ dpois(lambda[i])
   }})
 
-model_pg <- nimbleModel(model_code_pg, data = list(y=rpois(n, rgamma(n, 10, 2))), 
-                        constants = list(n=n), inits = list(a = 10, b = 2), buildDerivs = TRUE)
+model_pg <- nimbleModel(model_code_pg, data = list(y=rpois(n, rgamma(n, 10, 2))),
+                          constants = list(n=n), inits = list(a = 10, b = 2), 
+                          buildDerivs = TRUE)
 cmodel_pg  <- compileNimble(model_pg)
 ```
 
@@ -138,6 +139,7 @@ Now, in theory if we can marginalize over the random effects in the Poisson gamm
 ```{r}
 Rlaplacepg <- buildLaplace(model_pg)
 laplacepg <- compileNimble(Rlaplacepg)
+laplacepg$getNodeNamesVec()
 laplacepg$calcLogLik(c(10,2))
 cmodel_nb$a <- 10
 cmodel_nb$b <- 2
@@ -150,6 +152,14 @@ This is pretty close but it isn't exact. We can actually do better than Laplace 
 laplacepg$updateSettings(nQuad = 11)
 laplacepg$calcLogLik(c(10,2))
 cmodel_nb$calculate("y")
+
+ll <- NULL
+for( i in 1:20){
+  laplacepg$updateSettings(nQuad = i)
+  ll <- c(ll, laplacepg$calcLogLik(c(10,2)))
+}
+plot(1:20, ll, type = "l")
+abline(h = cmodel_nb$calculate("y"), lty = 2, col = 'red')
 ```
 
 Now that is pretty much exact!
@@ -233,8 +243,9 @@ samp.sum$uci <- samp.sum$X97.5.
 ```{r}
 rlaplace <- buildLaplace(model)
 claplace <- compileNimble(rlaplace)
+claplace$getNodeNamesVec()
 mle <- claplace$findMLE()
-## mle.sum <- summaryLaplace(claplace, mle) ## Should work depending on nimble install.
+# mle.sum <- summaryLaplace(claplace, mle) ## Should work depending on nimble install.
 mle.sum <- claplace$summary(mle)
 mle.sum$params
 out <- rbind(samp.sum[, c("param", "Mean", "SD", "lci", "uci", "method")], 

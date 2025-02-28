@@ -55,7 +55,7 @@ We want to let the model select what the true variables are. To do this we intro
 for $k \in (1,\ldots, 16)$. We can use the dummy variable to include or exclude the parameter in the model by writing
 
 \[
-  \mu_i = \beta_0 + \sum_{k=1}^{15} \beta_x z_k x_{ik}.
+  \mu_i = \beta_0 + \sum_{k=1}^{15} \beta_k z_k x_{ik}.
 \]
 
 When $z_k = 0$, then $x_{k}$ has no effect and we treat $\beta_k$ removed from the model.
@@ -82,6 +82,7 @@ lmCode <- nimbleCode({
   
   for(i in 1:n) {
     pred.y[i] <- inprod(X[i, 1:numVars], zbeta[1:numVars])
+    # pred.y[i] <- sum(X[i, 1:numVars]*zbeta[1:numVars])
     y[i] ~ dnorm(pred.y[i], sd = sigma)
   }
 })
@@ -148,8 +149,8 @@ Look at beta[2]
 
 ```{r}
 inds <- seq(50000, 60000, by=10) ## Look at arbitrary 1001 iterations thinned
-plot(samples_nimble[inds,'beta[2]'])
-plot(samples_nimble[inds,'z[2]'])
+plot(samples_nimble[inds,'beta[2]'], type = "l")
+plot(samples_nimble[inds,'z[2]'], type = "l")
 ```
 
 Look at beta[4]
@@ -173,7 +174,7 @@ Look at posterior inclusion probabilities from each `beta[i]`
 ```{r}
 zCols <- grep("z\\[", colnames(samples_nimble))
 posterior_inclusion_prob_nimble <- colMeans(samples_nimble[,zCols])
-plot(true_betas, posterior_inclusion_prob_nimble)
+plot(jitter(true_betas), posterior_inclusion_prob_nimble)
 ```
 
 Look at posterior inclusion probability, `psi`
@@ -184,7 +185,7 @@ plot(density(samples_nimble[,'psi']))
 
 ### Summary of results from default nimble
 
-- `beta[4]`, `beta[4]` and `beta[6]` are often included.
+- `beta[4]`, `beta[5]` and `beta[6]` are often included.
 - When `z[i] = 0`, the corresponding `beta[i]` will start following its **prior**.  It may wander far away from reasonable values, with either fast or slow mixing (depending on the situation).
 - Different samplers (e.g. slice samplers for `beta[i]`s) could do better but not solve the fundamental problem.
 
@@ -242,8 +243,8 @@ Look at beta[2]
 
 ```{r}
 inds <- seq(50000, 60000, by = 10)
-plot(samples_nimble_RJ[inds,'beta[2]'])
-plot(samples_nimble_RJ[inds,'z[2]'])
+plot(samples_nimble_RJ[,'beta[2]'], type = "l")
+plot(samples_nimble_RJ[,'z[2]'], type= "l")
 ```
 
 Look at beta[5]
@@ -260,6 +261,13 @@ plot(samples_nimble_RJ[inds,'beta[6]'])
 plot(samples_nimble_RJ[inds,'z[6]'])
 ```
 
+Look at beta[10]
+
+```{r}
+plot(samples_nimble_RJ[,'beta[10]'])
+plot(samples_nimble_RJ[,'z[10]'])
+```
+
 Look at posterior inclusion probabilities of each `beta[i]`
 
 ```{r}
@@ -272,6 +280,11 @@ Look at posterior inclusion probability, `psi`
 
 ```{r}
 plot(density(samples_nimble_RJ[,'psi']))
+```
+
+```{r}
+fit.lm <- lm(y ~ -1+X1+X2+X3+X4+X5+X6, 
+              data = dat, na.action = na.fail)
 ```
 
 ### Summary of RJMCMC

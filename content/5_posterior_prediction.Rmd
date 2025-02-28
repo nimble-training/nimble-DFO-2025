@@ -63,7 +63,7 @@ sox_model <- nimbleCode({
   # Priors
   logalpha ~ dunif(0, 10)
   sigma ~ dunif(0,10)
-  logE ~ dnorm(2, sd = 2)
+  logE ~ dnorm(2, sd = 5)
   E <- exp(logE)
 
   # Likelihood:
@@ -88,7 +88,7 @@ Cmodel <- compileNimble(Rmodel)
 Cmcmc <- compileNimble(Rmcmc, project = Rmodel)
 samples <- runMCMC(Cmcmc, niter = 10000, nburnin = 2000, nchains = 3, 
                    inits = inits(), samplesAsCodaMCMC = TRUE)
-plot(samples)
+plot(samples[, 'logE'])
 ```
 
 ## Posterior Transformations
@@ -105,14 +105,18 @@ If we want simple unbiased estimates on any scale, we need to transform the MCMC
 
 ```{r}
 out <- do.call("rbind", samples)
+
 post.logalpha <- out[, "logalpha"]
 mean(post.logalpha)
 exp(mean(post.logalpha))
 post.alpha <- exp(post.logalpha)
 mean(post.alpha)
+
+exp(median(post.logalpha))
+median(post.alpha)
 ```
 
-In a Frequentist setting for log-normal data in stock assessment you'll often see what they call a "bias correction" term ($-\sigma/2$) added to the equation to make the estimated mean be correct on the real scale. For a good discussion on marginal means see [Gory et al. (2020)](https://doi.org/10.1002/sim.8782).
+In a Frequentist setting for log-normal data in stock assessment you'll often see what they call a "bias correction" term ($-\sigma^2/2$) added to the equation to make the estimated mean be correct on the real scale. For a good discussion on marginal means see [Gory et al. (2020)](https://doi.org/10.1002/sim.8782).
 
 Let's see the difference for our reference points. Does the mean/median/mode make more sense for setting reference points? What is the interpretation of each?
 
@@ -160,6 +164,7 @@ ppSamplerNF <- nimbleFunction(
           setup = function(model, mcmc) {
               dataNodes <- model$getNodeNames(dataOnly = TRUE)
               parentNodes <- model$getParents(dataNodes, stochOnly = TRUE)
+              nparents <- length(parentNodes)
               cat("Stochastic parents of data are:", paste(parentNodes, collapse = ','), ".\n")
               simNodes <- model$getDependencies(parentNodes, self = FALSE)
               # need ordering of variables in mvSamples / samples matrix
@@ -171,13 +176,14 @@ ppSamplerNF <- nimbleFunction(
               nSamp <- dim(samples)[1]
               ppSamples <- matrix(0, nrow = nSamp, ncol = n) ## added fitted values.
               for(i in 1:nSamp) {
-                    values(model, vars) <<- samples[i, ]
-                    model$simulate(simNodes, includeData = TRUE)
-                    ppSamples[i,] <- values(model, dataNodes)
+                  values(model, vars) <<- samples[i, ]
+                  model$simulate(simNodes, includeData = TRUE)
+                  ppSamples[i,] <- values(model, dataNodes)
               }
               returnType(double(2))
               return(ppSamples)
-          })
+          }
+)
 ```
 
 We can then set this function up and compile it into C++.
@@ -194,14 +200,14 @@ To generate random quantile residuals, or at least the `DHARMa` equivalent, we n
 ppsamples <- ppsamplerc$run(out)
 
 ## Fitted values:
-values(Cmodel, colnames(out)) <- colSums(out)/nrow(out)
-Cmodel$calculate()
-fitted <- Cmodel$mean_logRS
+fittedMean <- colSums(ppsamples)/nrow(ppsamples)
+fittedMode <- apply(ppsamples, 2, FUN =
+      function(x){MCMCglmm::posterior.mode(coda::as.mcmc(x))})
 
 library(DHARMa)
 resids <- createDHARMa(simulatedResponse = t(ppsamples), 
                            observedResponse = sox$logRS,
-                           fittedPredictedResponse = fitted,
+                           fittedPredictedResponse = fittedMean,
                            integerResponse = FALSE)
 plot(resids)
 ```
